@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Social Accounts Auth</title>
+</head>
+<body>
+    <h1>Test Social Accounts Authentication</h1>
+    
+    <div>
+        <h3>Step 1: Get your token from localStorage</h3>
+        <button onclick="copyToken()">Copy Token from LocalStorage</button>
+        <input type="text" id="tokenInput" placeholder="Paste token here" style="width: 400px; margin: 10px;">
+    </div>
+    
+    <div>
+        <h3>Step 2: Test Endpoints</h3>
+        <button onclick="testPublic()">Test Public Route (/test-route)</button><br>
+        <button onclick="testAccounts()">Test Accounts Route (/accounts)</button><br>
+        <button onclick="testDebug()">Test Debug Route (/debug-accounts)</button><br>
+        <button onclick="createTestConnection()">Create Test Connection</button>
+    </div>
+    
+    <div>
+        <h3>Results:</h3>
+        <pre id="result" style="background: #f0f0f0; padding: 10px; border: 1px solid #ccc;"></pre>
+    </div>
+
+    <script>
+        function copyToken() {
+            // Get token from localStorage (simulating what your app does)
+            const token = localStorage.getItem('token');
+            if (token) {
+                document.getElementById('tokenInput').value = token;
+                alert('Token copied from localStorage!');
+            } else {
+                alert('No token found in localStorage. Please login first.');
+            }
+        }
+        
+        async function makeRequest(url, method = 'GET', body = null) {
+            const token = document.getElementById('tokenInput').value;
+            if (!token && !url.includes('/test-route')) {
+                alert('Please enter a token first!');
+                return;
+            }
+            
+            const options = {
+                method: method,
+                headers: {}
+            };
+            
+            if (token) {
+                options.headers['Authorization'] = `Bearer ${token}`;
+            }
+            
+            if (body) {
+                options.headers['Content-Type'] = 'application/json';
+                options.body = JSON.stringify(body);
+            }
+            
+            try {
+                const response = await fetch(url, options);
+                const data = await response.json();
+                document.getElementById('result').textContent = 
+                    `URL: ${url}\nStatus: ${response.status}\nResponse:\n${JSON.stringify(data, null, 2)}`;
+            } catch (error) {
+                document.getElementById('result').textContent = 
+                    `Error: ${error.message}`;
+            }
+        }
+        
+        function testPublic() {
+            makeRequest('http://localhost:5000/api/social/test-route');
+        }
+        
+        function testAccounts() {
+            makeRequest('http://localhost:5000/api/social/accounts');
+        }
+        
+        function testDebug() {
+            makeRequest('http://localhost:5000/api/social/debug-accounts');
+        }
+        
+        function createTestConnection() {
+            makeRequest('http://localhost:5000/api/social/test-connection', 'POST');
+        }
+    </script>
+</body>
+</html>

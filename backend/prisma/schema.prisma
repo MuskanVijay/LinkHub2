@@ -1,0 +1,155 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                   Int                  @id @default(autoincrement())
+  email                String               @unique
+  password             String
+  role                 Role                 @default(USER)
+  createdAt            DateTime             @default(now())
+  bio                  String?
+  facebook             String?
+  instagram            String?
+  linkedin             String?
+  name                 String?
+  notifications        Boolean?             @default(true)
+  phone                String?
+  profilePic           String?
+  timezone             String?              @default("Asia/Karachi")
+  twitter              String?
+  username             String?              @unique
+  resetPasswordExpires DateTime?
+  resetPasswordToken   String?
+  isVerified           Boolean              @default(false)
+  otpCode              String?
+  otpExpires           DateTime?
+  drafts               Draft[]
+  socialConnections    SocialConnection[]
+  faqQuestions         FaqQuestion[]
+  faqReplies           FaqReply[]
+  contactMessages      ContactMessage[]
+}
+
+model Draft {
+  id               Int               @id @default(autoincrement())
+  userId           Int
+  platforms        String[]          // ['FACEBOOK', 'INSTAGRAM']
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  title            String?
+  masterContent    String?           // Default caption
+  platformData     Json?             // Stores { "FACEBOOK": "caption 1", "INSTAGRAM": "caption 2" }
+  mediaUrls        String[]
+  scheduledAt      DateTime?
+  status           DraftStatus       @default(DRAFT)
+  rejectionReason  String?
+  aiPrompt         String?           // New: Store the prompt used for AI generation
+  publishedId      String?
+  analytics        Json?
+  
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  publishedPosts   PublishedPost[]
+}
+model SocialConnection {
+  id               Int               @id @default(autoincrement())
+  userId           Int
+  user             User              @relation(fields: [userId], references: [id])
+  platform         String            // 'instagram', 'facebook', 'twitter', 'linkedin'
+  platformUserId   String?           // User ID from the social platform
+  accountName      String
+  accessToken      String?
+  refreshToken     String?
+  tokenExpiresAt   DateTime?
+  isConnected      Boolean           @default(true)
+  profilePicture   String?
+  metadata         Json?             // Additional platform-specific data
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  publishedPosts   PublishedPost[]
+
+@@unique([userId, platform, platformUserId])
+}
+
+model PublishedPost {
+  id              Int               @id @default(autoincrement())
+  draftId         Int
+  draft           Draft             @relation(fields: [draftId], references: [id])
+  socialAccountId Int
+  socialAccount   SocialConnection  @relation(fields: [socialAccountId], references: [id])
+  platformPostId  String?           // ID from social platform
+  publishedAt     DateTime?
+  status          String            @default("pending") // pending, published, failed
+  errorMessage    String?
+  metrics         Json?             // Likes, shares, comments, etc.
+  metadata        Json?             // ADD THIS LINE - for storing additional data
+  createdAt       DateTime          @default(now())
+
+  @@unique([draftId, socialAccountId])
+}
+// FAQ MODELS
+model FaqQuestion {
+  id          Int       @id @default(autoincrement())
+  question    String
+  userId      Int
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  replies     FaqReply[]
+  likes       Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([createdAt])
+}
+
+model FaqReply {
+  id          Int         @id @default(autoincrement())
+  reply       String
+  questionId  Int
+  question    FaqQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  userId      Int
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  likes       Int         @default(0)
+  createdAt   DateTime    @default(now())
+
+  @@index([questionId])
+  @@index([createdAt])
+}
+
+// CONTACT MODELS
+model ContactMessage {
+  id              Int      @id @default(autoincrement())
+  name            String
+  email           String
+  recipientEmail  String   // Which email was selected to send to
+  subject         String
+  message         String
+  category        String   @default("general")
+  userId          Int?
+  user            User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt       DateTime @default(now())
+  status          String   @default("PENDING") // PENDING, RESPONDED, RESOLVED
+  responseNotes   String?
+
+  @@index([createdAt])
+  @@index([status])
+  @@index([recipientEmail])
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum DraftStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+  SCHEDULED
+  PUBLISHED
+}
