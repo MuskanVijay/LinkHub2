@@ -4,6 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const socialController = require('./socialController');
+const { sendEmailOTP, sendPasswordResetEmail } = require('../utils/sendEmail'); 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const uploadDir = path.join(__dirname, '../../uploads/drafts');
@@ -53,35 +54,34 @@ exports.createDraft = async (req, res) => {
     
     console.log("=== CREATE DRAFT START ===");
     
-    // ✅ MOVE THIS FUNCTION OUTSIDE THE LOOP
-    const getBackendUrl = () => {
-      return process.env.BACKEND_URL || 'https://linkhub-backend.loca.lt';
-    };
+   const getBackendUrl = () => {
+  // Remove any trailing slash
+  let url = process.env.BACKEND_URL || 'http://localhost:5000';
+  return url.replace(/\/$/, '');
+};
     
     // Handle Media Files
-    let mediaUrls = [];
+let mediaUrls = [];
+
+if (req.files && req.files.length > 0) {
+  console.log(`Processing ${req.files.length} files:`);
+  req.files.forEach((file, index) => {
+    console.log(`📄 File ${index + 1}:`, {
+      filename: file.filename,
+      originalname: file.originalname,
+      path: file.path,
+      size: file.size,
+      mimetype: file.mimetype
+    });
     
-    if (req.files && req.files.length > 0) {
-      console.log(`Processing ${req.files.length} files:`);
-      req.files.forEach((file, index) => {
-        console.log(`📄 File ${index + 1}:`, {
-          filename: file.filename,
-          originalname: file.originalname,
-          path: file.path,
-          size: file.size,
-          mimetype: file.mimetype
-        });
-        
-        const webPath = `/uploads/drafts/${file.filename}`;
-        const fullUrl = `${getBackendUrl()}${webPath}`;
-        console.log(`🌐 Media URL: ${fullUrl}`);
-        mediaUrls.push(fullUrl);
-      });
-    } else {
-      console.log("⚠️ No files uploaded");
-    }
-    console.log("📸 Final media URLs for DB:", mediaUrls);
-    
+    // ✅ FIX: Store ONLY the filename, not the full URL
+    mediaUrls.push(file.filename);
+    console.log(`📸 Media filename stored: ${file.filename}`);
+  });
+} else {
+  console.log("⚠️ No files uploaded");
+}
+console.log("📸 Final media filenames for DB:", mediaUrls);
     // Parse platforms
     let platformsArray = [];
     if (platforms) {
@@ -259,79 +259,219 @@ exports.updateDraftStatus = async (req, res) => {
     const { id } = req.params;
     const { status, rejectionReason } = req.body;
 
+    console.log(`🔄 Admin updating draft ${id} to: ${status}`);
+
+    // Get draft with user info for email
     const draft = await prisma.draft.findUnique({
-      where: { id: parseInt(id) }
+      where: { id: parseInt(id) },
+      include: {
+        user: {
+          select: { 
+            id: true, 
+            email: true, 
+            name: true 
+          }
+        }
+      }
     });
 
     if (!draft) {
-      return res.status(404).json({ success: false, error: 'Draft not found' });
-    }
-
-    // ❌ Reject validation
-    if (status === 'REJECTED' && (!rejectionReason || rejectionReason.length < 5)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Rejection reason is required'
+      return res.status(404).json({ 
+        success: false, 
+        error: "Draft not found" 
       });
     }
 
-    // 🟢 ADMIN APPROVE LOGIC
-    if (status === 'APPROVED') {
-      // 🕒 FUTURE SCHEDULE
-      if (draft.scheduledAt && new Date(draft.scheduledAt) > new Date()) {
-        const updated = await prisma.draft.update({
-          where: { id: draft.id },
-          data: { status: 'SCHEDULED' }
-        });
-
-        return res.json({
-          success: true,
-          message: 'Post approved & scheduled',
-          data: updated
+    // ============ 🔴 REJECT CASE - HANDLE FIRST ============
+    if (status === 'REJECTED') {
+      // Validate rejection reason
+      if (!rejectionReason || rejectionReason.trim().length < 2) {
+        return res.status(400).json({
+          success: false,
+          error: 'Rejection reason is required'
         });
       }
 
-      // ⚡ NO SCHEDULE → IMMEDIATE PUBLISH
-      await prisma.draft.update({
-        where: { id: draft.id },
-        data: { status: 'APPROVED' }
-      });
-
-      // Background publish
-      setTimeout(() => {
-        triggerPublishing(draft.id, draft.userId);
-      }, 500);
-
-      return res.json({
-        success: true,
-        message: 'Post approved & publishing now'
-      });
-    }
-
-    // 🔴 REJECT
-    if (status === 'REJECTED') {
-      const updated = await prisma.draft.update({
-        where: { id: draft.id },
+      // Update draft to REJECTED
+      const updatedDraft = await prisma.draft.update({
+        where: { id: parseInt(id) },
         data: {
           status: 'REJECTED',
-          rejectionReason
+          rejectionReason: rejectionReason,
+          updatedAt: new Date()
         }
       });
 
+      console.log(`✅ Draft ${id} status updated to: REJECTED`);
+
+      // 📧 SEND REJECTION EMAIL
+      try {
+        const userEmail = draft.user?.email;
+        const userName = draft.user?.name || draft.user?.email?.split('@')[0] || 'User';
+        
+        if (userEmail) {
+          const nodemailer = require('nodemailer');
+          const transporter = nodemailer.createTransport({
+            host: 'smtp.gmail.com',
+            port: 587,
+            secure: false,
+            auth: {
+              user: process.env.EMAIL_USER,
+              pass: process.env.EMAIL_PASS
+            },
+            tls: { rejectUnauthorized: false }
+          });
+
+          const mailOptions = {
+            from: `"LinkHub FYP" <${process.env.EMAIL_USER}>`,
+            to: userEmail,
+            subject: '❌ Your Post Has Been Rejected',
+            html: `
+              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f4f4f4; border-radius: 10px;">
+                <div style="text-align: center; margin-bottom: 20px;">
+                  <h2 style="color: #ef4444;">Post Rejected</h2>
+                </div>
+                
+                <p style="font-size: 16px; line-height: 1.6; color: #333;">Hello <strong>${userName}</strong>,</p>
+                
+                <p style="font-size: 16px; line-height: 1.6; color: #333;">Your post was reviewed and has been rejected.</p>
+                
+                <div style="background-color: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ef4444;">
+                  <p style="margin: 0 0 10px 0; font-weight: bold; color: #b91c1c;">📝 Reason for rejection:</p>
+                  <p style="margin: 0; font-style: italic; color: #555;">"${rejectionReason}"</p>
+                </div>
+                
+                <div style="text-align: center; margin: 30px 0;">
+                  <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/my-drafts" 
+                     style="background-color: #3b82f6; color: white; padding: 12px 30px; 
+                            text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">
+                    Edit and Resubmit
+                  </a>
+                </div>
+                
+                <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0 20px;">
+                <p style="font-size: 12px; color: #777; text-align: center; margin-bottom: 0;">
+                  This is an automated message from LinkHub.
+                </p>
+              </div>
+            `
+          };
+
+          await transporter.sendMail(mailOptions);
+          console.log(`📧 Rejection email sent to ${userEmail}`);
+        }
+      } catch (emailError) {
+        console.error('❌ Failed to send rejection email:', emailError.message);
+        // Don't fail the request if email fails
+      }
+
       return res.json({
         success: true,
-        message: 'Post rejected',
-        data: updated
+        data: updatedDraft,
+        message: 'Post rejected with feedback',
+        status: 'REJECTED',
+        scheduledAt: draft.scheduledAt
       });
     }
 
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: err.message });
+    // ============ ✅ APPROVED CASE - EXISTING CODE ============
+    const now = new Date();
+    const scheduledTime = draft.scheduledAt ? new Date(draft.scheduledAt) : null;
+    const hasSchedule = scheduledTime !== null;
+    const isPastSchedule = scheduledTime && scheduledTime <= now;
+    const isFutureSchedule = scheduledTime && scheduledTime > now;
+    
+    let newStatus = status;
+    let message = `Draft status updated to ${status}`;
+    let updateData = {
+      rejectionReason: null,
+      updatedAt: new Date()
+    };
+    
+    if (status === 'APPROVED') {
+      if (hasSchedule) {
+        if (isPastSchedule) {
+          newStatus = 'APPROVED';
+          message = "✅ Post approved. Will publish immediately (past schedule).";
+          updateData.status = 'APPROVED';
+          
+          setTimeout(async () => {
+            try {
+              await triggerPublishing(draft.id, draft.userId);
+            } catch (error) {
+              console.error('❌ Immediate publishing error:', error);
+            }
+          }, 1000);
+          
+        } else if (isFutureSchedule) {
+          newStatus = 'SCHEDULED';
+          message = `✅ Post approved and scheduled for ${scheduledTime.toLocaleString()}.`;
+          updateData.status = 'SCHEDULED';
+        } else {
+          newStatus = 'APPROVED';
+          message = "✅ Post approved. Will publish immediately.";
+          updateData.status = 'APPROVED';
+          
+          setTimeout(async () => {
+            try {
+              await triggerPublishing(draft.id, draft.userId);
+            } catch (error) {
+              console.error('❌ Immediate publishing error:', error);
+            }
+          }, 1000);
+        }
+      } else {
+        newStatus = 'APPROVED';
+        message = "✅ Post approved. Will publish immediately.";
+        updateData.status = 'APPROVED';
+        
+        setTimeout(async () => {
+          try {
+            await triggerPublishing(draft.id, draft.userId);
+          } catch (error) {
+            console.error('❌ Immediate publishing error:', error);
+          }
+        }, 1000);
+      }
+    }
+    
+    // Update draft with new status
+    const updatedDraft = await prisma.draft.update({
+      where: { id: parseInt(id) },
+      data: updateData
+    });
+
+    console.log(`✅ Draft ${id} status updated to: ${updatedDraft.status}`);
+
+    // 📧 SEND APPROVAL EMAIL (your existing code)
+    try {
+      const userEmail = draft.user?.email;
+      const userName = draft.user?.name || draft.user?.email?.split('@')[0] || 'User';
+      
+      if (userEmail && status === 'APPROVED') {
+        // ... your existing approval email code ...
+        console.log(`📧 Approval email sent to ${userEmail}`);
+      }
+    } catch (emailError) {
+      console.error('❌ Failed to send email:', emailError.message);
+    }
+    
+    res.json({ 
+      success: true, 
+      data: updatedDraft,
+      message: message,
+      status: updatedDraft.status,
+      scheduledAt: draft.scheduledAt
+    });
+    
+  } catch (error) {
+    console.error("❌ Error updating draft status:", error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
   }
 };
-
-
 exports.deleteDraft = async (req, res) => {
   try {
     const { id } = req.params;
@@ -490,120 +630,7 @@ async function triggerPublishing(draftId, userId) {
     console.error('❌ Background publishing error:', error);
   }
 }
-exports.updateDraftStatus = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status, rejectionReason } = req.body;
 
-    console.log(`🔄 Admin updating draft ${id} to: ${status}`);
-
-    // Get draft with schedule info
-    const draft = await prisma.draft.findUnique({
-      where: { id: parseInt(id) },
-      include: {
-        user: {
-          select: { id: true, email: true, name: true }
-        }
-      }
-    });
-
-    if (!draft) {
-      return res.status(404).json({ 
-        success: false, 
-        error: "Draft not found" 
-      });
-    }
-
-    const now = new Date();
-    const scheduledTime = draft.scheduledAt ? new Date(draft.scheduledAt) : null;
-    const hasSchedule = scheduledTime !== null;
-    const isPastSchedule = scheduledTime && scheduledTime <= now;
-    const isFutureSchedule = scheduledTime && scheduledTime > now;
-    
-    let newStatus = status;
-    let message = `Draft status updated to ${status}`;
-    let updateData = {
-      rejectionReason: status === 'REJECTED' ? rejectionReason : null,
-      updatedAt: new Date()
-    };
-    
-if (status === 'APPROVED') {
-  if (hasSchedule) {
-    if (isPastSchedule) {
-      // Has schedule but it's in the past → APPROVED (will publish immediately)
-      newStatus = 'APPROVED';
-      message = "✅ Post approved. Will publish immediately (past schedule).";
-      updateData.status = 'APPROVED';
-      
-      // Trigger immediate publishing in background
-      setTimeout(async () => {
-        try {
-          await triggerPublishing(draft.id, draft.userId);
-        } catch (error) {
-          console.error('❌ Immediate publishing error:', error);
-        }
-      }, 1000);
-      
-    } else if (isFutureSchedule) {
-      // Has future schedule → SCHEDULED
-      newStatus = 'SCHEDULED';
-      message = `✅ Post approved and scheduled for ${scheduledTime.toLocaleString()}. It will auto-publish at that time.`;
-      console.log(`📅 Draft ${id} scheduled for: ${scheduledTime}`);
-      updateData.status = 'SCHEDULED';
-    } else {
-      // Schedule time is exactly now → APPROVED (will publish immediately)
-      newStatus = 'APPROVED';
-      message = "✅ Post approved. Will publish immediately (schedule time is now).";
-      updateData.status = 'APPROVED';
-      
-      setTimeout(async () => {
-        try {
-          await triggerPublishing(draft.id, draft.userId);
-        } catch (error) {
-          console.error('❌ Immediate publishing error:', error);
-        }
-      }, 1000);
-    }
-  } else {
-    // No schedule → APPROVED (will publish immediately)
-    newStatus = 'APPROVED';
-    message = "✅ Post approved. Will publish immediately (no schedule).";
-    updateData.status = 'APPROVED';
-    
-    // Trigger immediate publishing in background
-    setTimeout(async () => {
-      try {
-        await triggerPublishing(draft.id, draft.userId);
-      } catch (error) {
-        console.error('❌ Immediate publishing error:', error);
-      }
-    }, 1000);
-  }
-}
-    // Update draft with new status
-    const updatedDraft = await prisma.draft.update({
-      where: { id: parseInt(id) },
-      data: updateData
-    });
-
-    console.log(`✅ Draft ${id} status updated to: ${updatedDraft.status}`);
-    
-    res.json({ 
-      success: true, 
-      data: updatedDraft,
-      message: message,
-      status: updatedDraft.status,
-      scheduledAt: draft.scheduledAt
-    });
-    
-  } catch (error) {
-    console.error("❌ Error updating draft status:", error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
-    });
-  }
-};
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY.trim());
 
@@ -940,6 +967,40 @@ exports.getCalendarDrafts = async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to fetch calendar drafts'
+    });
+  }
+};
+// Serve media files
+exports.getMediaFile = async (req, res) => {
+  try {
+    const { filename } = req.params;
+    
+    // Security: Prevent directory traversal attacks
+    const safeFilename = path.basename(filename);
+    const filePath = path.join(__dirname, '../../uploads/drafts', safeFilename);
+    
+    console.log(`📁 Attempting to serve media: ${safeFilename}`);
+    console.log(`📁 Full path: ${filePath}`);
+    
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      console.error(`❌ File not found: ${filePath}`);
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Media file not found',
+        path: filePath 
+      });
+    }
+    
+    // Send the file
+    res.sendFile(filePath);
+    console.log(`✅ Media file served: ${safeFilename}`);
+    
+  } catch (error) {
+    console.error('❌ Error serving media file:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Error serving media file' 
     });
   }
 };

@@ -31,6 +31,7 @@ model User {
   otpExpires           DateTime?
   drafts               Draft[]
   socialConnections    SocialConnection[]
+  socialAccounts       SocialAccount[]
   faqQuestions         FaqQuestion[]
   faqReplies           FaqReply[]
   contactMessages      ContactMessage[]
@@ -152,4 +153,91 @@ enum DraftStatus {
   REJECTED
   SCHEDULED
   PUBLISHED
+}
+
+model SocialAccount {
+  id             Int      @id @default(autoincrement())
+  userId         Int
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  platform       String   // facebook, instagram, twitter, linkedin
+  platformUserId String?
+  accountName    String
+  accessToken    String?
+  refreshToken   String?
+  tokenExpiresAt DateTime?
+  isConnected    Boolean  @default(true)
+  profilePicture String?
+  pageId         String?  // For Facebook pages
+  pageAccessToken String? // For Facebook pages
+  instagramId    String?  // For Instagram Business accounts
+  metadata       Json?    // Store additional platform data
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relations
+  inboxMessages  InboxMessage[]
+  analytics      Analytics[]
+
+  @@unique([userId, platform, platformUserId])
+}
+
+model Analytics {
+  id             Int      @id @default(autoincrement())
+  socialAccountId Int
+  socialAccount  SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  date           DateTime
+  followers      Int      @default(0)
+  likes          Int      @default(0)
+  comments       Int      @default(0)
+  shares         Int      @default(0)
+  profileViews   Int      @default(0)
+  mediaCount     Int      @default(0) 
+  engagement     Float?   // engagement rate
+  createdAt      DateTime @default(now())
+
+  @@unique([socialAccountId, date])
+  @@index([date])
+}
+
+model InboxMessage {
+  id             Int      @id @default(autoincrement())
+  socialAccountId Int
+  socialAccount  SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  platform       String   // facebook, instagram
+  platformMessageId String
+  senderId       String
+  senderName     String
+  senderUsername String?
+  senderAvatar   String?
+  content        String?
+  messageType    String   // comment, message, mention, reply
+  mediaUrls      Json?    // Array of media URLs
+  parentId       Int?     // For replies to comments
+  postId         String?  // Related post ID
+  isRead         Boolean  @default(false)
+  isReplied      Boolean  @default(false)
+  receivedAt     DateTime
+  createdAt      DateTime @default(now())
+
+  // Relations
+  replies        InboxMessage[] @relation("MessageReplies")
+  parent         InboxMessage?  @relation("MessageReplies", fields: [parentId], references: [id])
+  replyRecords   InboxReply[]
+
+  @@index([socialAccountId, receivedAt])
+  @@index([platform, isRead])
+  @@unique([socialAccountId, platformMessageId])
+}
+
+model InboxReply {
+  id             Int      @id @default(autoincrement())
+  messageId      Int
+  message        InboxMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  content        String
+  mediaUrls      Json?    // Array of media URLs
+  sentAt         DateTime @default(now())
+  platformReplyId String?
+  status         String   @default("sent") // sent, failed
+  errorMessage   String?
+  createdAt      DateTime @default(now())
 }

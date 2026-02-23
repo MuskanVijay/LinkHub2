@@ -22,7 +22,7 @@ router.post('/linkedin/register', authMiddleware, socialController.registerLinke
 router.get('/callback/twitter-oauth1', socialController.twitterOAuth1Callback);
 router.get('/check-tokens', socialController.checkTwitterToken);
 router.get('/debug-twitter', socialController.debugTwitterMedia);
-router.get('/simple-media-test', socialController.simpleMediaTest);
+// router.get('/simple-media-test', socialController.simpleMediaTest);
 router.get('/debug/file-location', socialController.debugFileLocation);
 
 // ==================== AUTHENTICATED ROUTES ====================
@@ -39,9 +39,9 @@ router.post('/publish-draft/:draftId', socialController.publishToSocialMedia);
 
 // Twitter OAuth 1.0a routes for posting capability
 router.get('/oauth/twitter-oauth1', socialController.getTwitterOAuth1Url);
-
+router.get('/post/:postId/metrics', socialController.fetchPostMetrics);
 // Twitter Testing Routes (Authenticated)
-router.get('/test/twitter/oauth2', socialController.checkOAuth2Setup);
+// router.get('/test/twitter/oauth2', socialController.checkOAuth2Setup);
 router.get('/test/twitter/oauth1', socialController.testOAuth1);
 
 module.exports = router;

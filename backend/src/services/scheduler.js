@@ -2,6 +2,8 @@
 const cron = require('node-cron');
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
+const analyticsService = require('./analyticsService');
+const inboxService = require('./inboxService');
 
 async function publishScheduledDraft(draftId) {
     try {
@@ -155,3 +157,119 @@ cron.schedule('* * * * *', async () => {
     }
 });
 console.log('⏰ Scheduler started. Running every minute to check scheduled posts.');
+
+// Add these functions to your scheduler.js if they're missing
+
+// Fetch analytics for all users
+async function fetchAllUsersAnalytics() {
+  try {
+    console.log('📊 Starting analytics fetch for all users...');
+    
+    // Get all users with connected social accounts
+    const users = await prisma.user.findMany({
+      where: {
+        socialConnections: {
+          some: {
+            isConnected: true,
+            platform: { in: ['facebook', 'instagram'] }
+          }
+        }
+      },
+      select: { id: true }
+    });
+
+    console.log(`📊 Found ${users.length} users with connected accounts`);
+
+    const socialController = require('../controllers/socialController');
+    let totalStored = 0;
+
+    for (const user of users) {
+      try {
+        const stored = await socialController.storeUserAnalytics(user.id);
+        totalStored += stored;
+        // Add delay to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      } catch (err) {
+        console.error(`❌ Failed to fetch analytics for user ${user.id}:`, err.message);
+      }
+    }
+
+    console.log(`✅ Analytics fetch completed. Stored/Updated ${totalStored} records`);
+  } catch (error) {
+    console.error('❌ Error in analytics fetch:', error);
+  }
+}
+
+// Fetch post metrics for recent posts
+async function fetchRecentPostMetrics() {
+  try {
+    console.log('📈 Fetching metrics for recent posts...');
+    
+    const oneDayAgo = new Date();
+    oneDayAgo.setDate(oneDayAgo.getDate() - 7); // Last 7 days
+    
+    const recentPosts = await prisma.publishedPost.findMany({
+      where: {
+        publishedAt: { gte: oneDayAgo },
+        status: 'published'
+      },
+      include: { 
+        socialAccount: true,
+        draft: true
+      }
+    });
+
+    console.log(`📊 Found ${recentPosts.length} recent posts`);
+
+    const socialController = require('../controllers/socialController');
+    let updatedCount = 0;
+
+    for (const post of recentPosts) {
+      try {
+        let metrics = {};
+        
+        if (post.socialAccount.platform === 'facebook') {
+          metrics = await socialController.getFacebookMetrics(post.socialAccount, post.platformPostId);
+        } else if (post.socialAccount.platform === 'instagram') {
+          metrics = await socialController.getInstagramMetrics(post.socialAccount, post.platformPostId);
+        }
+
+        if (Object.keys(metrics).length > 0) {
+          await prisma.publishedPost.update({
+            where: { id: post.id },
+            data: { metrics }
+          });
+          updatedCount++;
+          console.log(`✅ Updated metrics for post ${post.id}`);
+        }
+
+        // Add delay to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } catch (err) {
+        console.log(`⚠️ Error updating post ${post.id}: ${err.message}`);
+      }
+    }
+
+    console.log(`✅ Updated metrics for ${updatedCount} posts`);
+  } catch (error) {
+    console.error('❌ Error fetching post metrics:', error);
+  }
+}
+
+// Add these cron jobs AFTER your existing cron schedule
+// ANALYTICS SCHEDULER - Run daily at 2 AM
+cron.schedule('0 2 * * *', async () => {
+  console.log('⏰ Running daily analytics fetch...');
+  await fetchAllUsersAnalytics();
+});
+
+// POST METRICS SCHEDULER - Run every minute
+cron.schedule('* * * * *', async () => {
+  console.log('⏰ Running post metrics update (every minute)...');
+  await fetchRecentPostMetrics();
+});
+// Update your startup log
+console.log('⏰ Scheduler started. Running:');
+console.log('   - Scheduled posts: every minute');
+console.log('   - Analytics fetch: daily at 2 AM');
+console.log('   - Post metrics: every 6 hours');

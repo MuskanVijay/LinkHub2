@@ -52,6 +52,12 @@ app.use('/api/contact', contactRoutes);
 const socialRoutes = require('./routes/social');
 app.use('/api/social', socialRoutes);
 
+const analyticsRoutes = require('./routes/analytics');
+app.use('/api/analytics', analyticsRoutes);
+
+const inboxRoutes = require('./routes/inbox');
+app.use('/api/inbox', inboxRoutes);
+
 // // Debug endpoints
 // app.get('/api/test-upload', (req, res) => {
 //   const testImagePath = path.join(__dirname, '..', 'uploads', 'drafts');

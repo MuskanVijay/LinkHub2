@@ -7,6 +7,8 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
 // Multer configuration
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -74,6 +76,7 @@ router.get('/calendar/drafts', authMiddleware, draftsController.getCalendarDraft
 
 // Status update route (user)
 router.patch('/:id/status', authMiddleware, draftsController.updateDraftStatus);
+router.get('/media/:filename', authMiddleware, draftsController.getMediaFile);
 
 // Health check
 router.get('/health', (req, res) => {
@@ -84,5 +87,94 @@ router.get('/health', (req, res) => {
     tunnelActive: true
   });
 });
-
+// ✅ UPDATE DRAFT - For editing existing drafts
+router.put('/:id', 
+  authMiddleware, 
+  upload.array('media', 10),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { masterContent, platforms, platformData, scheduledAt, status } = req.body;
+      const userId = req.user.userId || req.user.id;
+      
+      console.log(`📝 Updating draft ${id} for user ${userId}`);
+      
+      // Check if draft exists and belongs to user
+      const draft = await prisma.draft.findFirst({
+        where: {
+          id: parseInt(id),
+          userId: parseInt(userId)
+        }
+      });
+      
+      if (!draft) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Draft not found or you do not have permission to edit it' 
+        });
+      }
+      
+      // Handle media files - append new ones
+      let mediaUrls = draft.mediaUrls || [];
+      
+      if (req.files && req.files.length > 0) {
+        console.log(`📸 Adding ${req.files.length} new media files`);
+        req.files.forEach(file => {
+          mediaUrls.push(file.filename);
+        });
+      }
+      
+      // Parse platforms
+      let platformsArray = draft.platforms;
+      if (platforms) {
+        try {
+          platformsArray = Array.isArray(platforms) ? platforms : JSON.parse(platforms);
+        } catch (e) {
+          console.error("❌ Error parsing platforms:", e);
+        }
+      }
+      
+      // Parse platformData
+      let platformDataObj = draft.platformData || {};
+      if (platformData) {
+        try {
+          platformDataObj = typeof platformData === 'string' 
+            ? JSON.parse(platformData) 
+            : platformData;
+        } catch (e) {
+          console.error("❌ Error parsing platformData:", e);
+        }
+      }
+      
+      // Update draft
+      const updatedDraft = await prisma.draft.update({
+        where: { id: parseInt(id) },
+        data: {
+          masterContent: masterContent || draft.masterContent,
+          platforms: platformsArray,
+          platformData: platformDataObj,
+          scheduledAt: scheduledAt ? new Date(scheduledAt) : draft.scheduledAt,
+          mediaUrls: mediaUrls,
+          status: status || draft.status, // Keep existing status if not specified
+          updatedAt: new Date()
+        }
+      });
+      
+      console.log(`✅ Draft ${id} updated successfully`);
+      
+      res.json({
+        success: true,
+        data: updatedDraft,
+        message: 'Draft updated successfully'
+      });
+      
+    } catch (error) {
+      console.error('❌ Error updating draft:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: error.message 
+      });
+    }
+  }
+);
 module.exports = router;

@@ -1,3 +1,4 @@
+const nodemailer = require('nodemailer');
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const axios = require('axios');
@@ -15,6 +16,30 @@ cloudinary.config({
   api_key: process.env.CLOUDINARY_API_KEY, 
   api_secret: process.env.CLOUDINARY_API_SECRET 
 });
+const axiosInstance = axios.create({
+  timeout: 15000,
+  headers: {
+    'Content-Type': 'application/json',
+  }
+});
+axiosInstance.interceptors.response.use(undefined, async (err) => {
+  const { config, code } = err;
+   if (code === 'ENOTFOUND' || code === 'ECONNRESET' || code === 'ETIMEDOUT' || err.response?.status >= 500) {
+    if (!config || !config.retry) {
+      console.log(`⚠️ Network error (${code}), retrying in 2s...`);
+      config.retry = true;
+      
+      // Wait 2 seconds
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Retry the request
+      return axiosInstance(config);
+    }
+  }
+  
+  return Promise.reject(err);
+});
+
 
 const generateState = () => {
   return crypto.randomBytes(16).toString('hex');
@@ -27,6 +52,50 @@ setInterval(() => {
     }
   }
 }, 3600000);
+// //this was working
+// exports.getConnectedAccounts = async (req, res) => {
+//   try {
+//     const userId = Number(req.user.userId);
+    
+//     const connections = await prisma.socialConnection.findMany({
+//       where: { 
+//         userId: userId, 
+//         isConnected: true 
+//       }
+//     });
+
+//     console.log(`📊 Found ${connections.length} connected accounts for user ${userId}`);
+    
+//     const formattedAccounts = connections.map(account => {
+//       const isTokenValid = account.accessToken && 
+//                           !account.accessToken.startsWith('test_token_'); 
+//       return {
+//         id: account.id,
+//         platform: account.platform,
+//         accountName: account.accountName || 'Connected Account',
+//         profilePicture: account.profilePicture,
+//         platformUserId: account.platformUserId,
+//         platformName: account.platform.charAt(0).toUpperCase() + account.platform.slice(1),
+//         canPublish: !!isTokenValid,
+//         type: 'oauth',
+//         isTestToken: !!(account.accessToken && account.accessToken.startsWith('test_token_'))
+//       };
+//     });
+
+//     console.log(`✅ Returning ${formattedAccounts.length} formatted accounts`);
+    
+//     res.json({ 
+//       success: true, 
+//       accounts: formattedAccounts 
+//     });
+//   } catch (error) {
+//     console.error('Error fetching accounts:', error);
+//     res.status(500).json({ success: false, error: error.message });
+//   }
+// };
+
+// In socialController.js - FIXED version
+
 exports.getConnectedAccounts = async (req, res) => {
   try {
     const userId = Number(req.user.userId);
@@ -42,7 +111,8 @@ exports.getConnectedAccounts = async (req, res) => {
     
     const formattedAccounts = connections.map(account => {
       const isTokenValid = account.accessToken && 
-                          !account.accessToken.startsWith('test_token_'); 
+                          !account.accessToken.startsWith('test_token_');
+      
       return {
         id: account.id,
         platform: account.platform,
@@ -52,11 +122,13 @@ exports.getConnectedAccounts = async (req, res) => {
         platformName: account.platform.charAt(0).toUpperCase() + account.platform.slice(1),
         canPublish: !!isTokenValid,
         type: 'oauth',
-        isTestToken: !!(account.accessToken && account.accessToken.startsWith('test_token_'))
+        isTestToken: !!(account.accessToken && account.accessToken.startsWith('test_token_')),
+        // ⚠️ IMPORTANT: Include the access token!
+        accessToken: account.accessToken  // 👈 ADD THIS LINE
       };
     });
 
-    console.log(`✅ Returning ${formattedAccounts.length} formatted accounts`);
+    console.log(`✅ Returning ${formattedAccounts.length} formatted accounts with tokens`);
     
     res.json({ 
       success: true, 
@@ -83,6 +155,7 @@ exports.getOAuthUrl = async (req, res) => {
   'pages_manage_metadata', 
   'instagram_basic',
   'instagram_content_publish',
+  'instagram_manage_insights',
   'business_management'
       ].join(',');
       const extras = JSON.stringify({ setup: { channel: "IG_API_ONBOARDING" } });
@@ -718,6 +791,243 @@ exports.disconnectAccount = async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
+// //this was working
+// exports.publishToSocialMedia = async (req, res = null) => {
+//   try {
+//     const draftId = Number(req.params?.draftId || req.body?.draftId);
+//     let socialAccountIds = req.body?.socialAccountIds || [];
+
+//     const draft = await prisma.draft.findUnique({
+//       where: { id: draftId },
+//       include: { publishedPosts: true }
+//     });
+
+//     if (!draft) {
+//       if (res) return res.status(404).json({ success: false, error: 'Draft not found' });
+//       throw new Error('Draft not found');
+//     }
+
+//     const postContent = draft.masterContent || ""; 
+//     const mediaUrls = draft.mediaUrls || [];
+
+//     const accounts = await prisma.socialConnection.findMany({
+//       where: { id: { in: socialAccountIds.map(id => parseInt(id)) } }
+//     });
+
+//     console.log(`⚡ Publishing draft ${draftId} to ${accounts.length} accounts`);
+//     let successCount = 0;
+
+//     for (const account of accounts) {
+//       let result;
+//       const platformName = account.platform.toUpperCase();
+
+//       // 1. ROUTING TO PLATFORMS
+//       if (platformName === 'FACEBOOK') {
+//         result = await exports.publishToFacebook(account, postContent, mediaUrls);
+//       } else if (platformName === 'INSTAGRAM') {
+//         result = await exports.publishToInstagram(account, postContent, mediaUrls);
+//       } else if (platformName === 'TWITTER') {
+//         result = await exports.publishToTwitter(account, postContent, mediaUrls, draft.id);
+//       } 
+// else if (platformName === 'LINKEDIN') {
+//   console.log(`🔗 Publishing to LinkedIn account: ${account.accountName}`);
+//   result = await exports.publishToLinkedIn(account, postContent, mediaUrls);
+  
+//   // Save LinkedIn post to database
+//   if (result?.success) {
+//     successCount++;
+    
+//     await prisma.publishedPost.create({
+//       data: {
+//         draftId: draft.id,
+//         socialAccountId: account.id,
+//         platformPostId: String(result.platformPostId),
+//         status: 'PUBLISHED',
+//         publishedAt: new Date(),
+//         metadata: {
+//           hasMedia: result.hasMedia || false,
+//           mediaCount: mediaUrls?.length || 0
+//         }
+//       }
+//     });
+//   }
+// }
+
+//       // 2. HANDLING RESULTS
+//     // 2. HANDLING RESULTS
+// if (result?.success) {
+//   // Increment successCount for BOTH real and simulated successes
+//   successCount++;
+
+//   // Only create publishedPost record here for FB/IG/LinkedIn (not Twitter)
+//   // Twitter function handles its own DB creation (real or simulated).
+//   if (platformName !== 'TWITTER' && !result.simulated) {
+//     // Check if record already exists to avoid duplicate constraint
+//     const existingPost = await prisma.publishedPost.findUnique({
+//       where: {
+//         draftId_socialAccountId: {
+//           draftId: draft.id,
+//           socialAccountId: account.id
+//         }
+//       }
+//     });
+
+//     if (!existingPost) {
+//       await prisma.publishedPost.create({
+//         data: {
+//           draftId: draft.id,
+//           socialAccountId: account.id,
+//           platformPostId: String(result.platformPostId),
+//           status: 'PUBLISHED',
+//           publishedAt: new Date()
+//         }
+//       });
+//       console.log(`✅ Created published post record for ${platformName}`);
+//     } else {
+//       // Update existing record
+//       await prisma.publishedPost.update({
+//         where: {
+//           draftId_socialAccountId: {
+//             draftId: draft.id,
+//             socialAccountId: account.id
+//           }
+//         },
+//         data: {
+//           platformPostId: String(result.platformPostId),
+//           status: 'PUBLISHED',
+//           publishedAt: new Date()
+//         }
+//       });
+//       console.log(`🔄 Updated existing published post record for ${platformName}`);
+//     }
+//   }
+// }else {
+//         console.error(`❌ Failed to publish to ${account.platform}:`, result?.error);
+//       }
+//     }
+
+//     // 3. UPDATE MAIN DRAFT STATUS
+//   // 3. UPDATE MAIN DRAFT STATUS
+// if (successCount > 0) {
+//   await prisma.draft.update({
+//     where: { id: draftId },
+//     data: { 
+//       status: 'PUBLISHED',
+//       publishedId: String(new Date().getTime())
+//     }
+//   });
+
+//   // ============ 📧 SEND PUBLISHED EMAIL NOTIFICATION ============
+//   try {
+//     // Get draft with user details
+//     const publishedDraft = await prisma.draft.findUnique({
+//       where: { id: draftId },
+//       include: { 
+//         user: {
+//           select: { email: true, name: true }
+//         } 
+//       }
+//     });
+
+//     if (publishedDraft?.user?.email) {
+//       const userEmail = publishedDraft.user.email;
+//       const userName = publishedDraft.user.name || userEmail.split('@')[0];
+      
+//       // Get platform names for the email
+//       const platformNames = accounts.map(a => 
+//         a.platform.charAt(0).toUpperCase() + a.platform.slice(1)
+//       ).join(', ');
+
+//       // Create transporter (same as in sendEmail.js)
+//       const nodemailer = require('nodemailer');
+//       const transporter = nodemailer.createTransport({
+//         host: 'smtp.gmail.com',
+//         port: 587,
+//         secure: false,
+//         auth: {
+//           user: process.env.EMAIL_USER,
+//           pass: process.env.EMAIL_PASS
+//         },
+//         tls: { rejectUnauthorized: false }
+//       });
+
+//       const mailOptions = {
+//         from: `"LinkHub FYP" <${process.env.EMAIL_USER}>`,
+//         to: userEmail,
+//         subject: '🎉 Your Post Has Been Published!',
+//         html: `
+//           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f4f4f4; border-radius: 10px;">
+//             <div style="text-align: center; margin-bottom: 20px;">
+//               <h2 style="color: #3b82f6;">Published Successfully! 🚀</h2>
+//             </div>
+            
+//             <p style="font-size: 16px; line-height: 1.6; color: #333;">Hello <strong>${userName}</strong>,</p>
+            
+//             <p style="font-size: 16px; line-height: 1.6; color: #333;">Your post has been successfully published to your social media accounts!</p>
+            
+//             <div style="background-color: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #3b82f6;">
+//               <p style="margin: 0 0 10px 0; font-weight: bold; color: #0369a1;">📢 Published to:</p>
+//               <p style="margin: 0; color: #333;">${platformNames}</p>
+//             </div>
+            
+//             <div style="background-color: #f9f9f9; padding: 20px; border-radius: 8px; margin: 20px 0;">
+//               <p style="margin: 0 0 10px 0; font-weight: bold; color: #333;">📄 Your published content:</p>
+//               <p style="margin: 0; font-style: italic; color: #555;">"${publishedDraft.masterContent.substring(0, 150)}${publishedDraft.masterContent.length > 150 ? '...' : ''}"</p>
+//             </div>
+            
+//             <p style="font-size: 16px; line-height: 1.6; color: #333;">
+//               <strong>📊 Want to see how your post is performing?</strong> Check your analytics dashboard for engagement metrics.
+//             </p>
+            
+//             <div style="text-align: center; margin: 30px 0;">
+//               <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/analytics" 
+//                  style="background-color: #10b981; color: white; padding: 12px 30px; 
+//                         text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">
+//                 View Analytics
+//               </a>
+//               <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/my-drafts" 
+//                  style="background-color: #f3f4f6; color: #333; padding: 12px 30px; 
+//                         text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block; margin-left: 10px;">
+//                 My Posts
+//               </a>
+//             </div>
+            
+//             <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0 20px;">
+//             <p style="font-size: 12px; color: #777; text-align: center; margin-bottom: 0;">
+//               This is an automated message from LinkHub. Please do not reply to this email.<br>
+//               © ${new Date().getFullYear()} LinkHub. All rights reserved.
+//             </p>
+//           </div>
+//         `
+//       };
+
+//       await transporter.sendMail(mailOptions);
+//       console.log(`📧 Published email sent to ${userEmail}`);
+//     }
+//   } catch (emailError) {
+//     console.error('❌ Failed to send published email:', emailError.message);
+//   }
+// }
+//     console.log(`✅ Final Result: Published draft ${draftId} to ${successCount} accounts (including simulations)`);
+
+//     if (res && typeof res.json === 'function') {
+//       return res.json({ 
+//         success: true, 
+//         message: `Successfully published to ${successCount} out of ${accounts.length} accounts.` 
+//       });
+//     }
+    
+//     return { success: true, count: successCount };
+
+//   } catch (error) {
+//     console.error('❌ Global Publish Error:', error);
+//     if (res && typeof res.status === 'function') {
+//       return res.status(500).json({ success: false, error: error.message });
+//     }
+//     throw error; 
+//   }
+// };
+
 exports.publishToSocialMedia = async (req, res = null) => {
   try {
     const draftId = Number(req.params?.draftId || req.body?.draftId);
@@ -742,93 +1052,151 @@ exports.publishToSocialMedia = async (req, res = null) => {
 
     console.log(`⚡ Publishing draft ${draftId} to ${accounts.length} accounts`);
     let successCount = 0;
+    const publishedResults = [];
 
     for (const account of accounts) {
       let result;
       const platformName = account.platform.toUpperCase();
 
       // 1. ROUTING TO PLATFORMS
-      if (platformName === 'FACEBOOK') {
-        result = await exports.publishToFacebook(account, postContent, mediaUrls);
-      } else if (platformName === 'INSTAGRAM') {
-        result = await exports.publishToInstagram(account, postContent, mediaUrls);
-      } else if (platformName === 'TWITTER') {
-        result = await exports.publishToTwitter(account, postContent, mediaUrls, draft.id);
-      } 
-else if (platformName === 'LINKEDIN') {
-  console.log(`🔗 Publishing to LinkedIn account: ${account.accountName}`);
-  result = await exports.publishToLinkedIn(account, postContent, mediaUrls);
-  
-  // Save LinkedIn post to database
-  if (result?.success) {
-    successCount++;
-    
-    await prisma.publishedPost.create({
-      data: {
-        draftId: draft.id,
-        socialAccountId: account.id,
-        platformPostId: String(result.platformPostId),
-        status: 'PUBLISHED',
-        publishedAt: new Date(),
-        metadata: {
-          hasMedia: result.hasMedia || false,
-          mediaCount: mediaUrls?.length || 0
+      try {
+        if (platformName === 'FACEBOOK') {
+          result = await exports.publishToFacebook(account, postContent, mediaUrls);
+        } else if (platformName === 'INSTAGRAM') {
+          result = await exports.publishToInstagram(account, postContent, mediaUrls);
+        } else if (platformName === 'TWITTER') {
+          result = await exports.publishToTwitter(account, postContent, mediaUrls, draft.id);
+        } else if (platformName === 'LINKEDIN') {
+          console.log(`🔗 Publishing to LinkedIn account: ${account.accountName}`);
+          result = await exports.publishToLinkedIn(account, postContent, mediaUrls);
+        } else {
+          console.log(`⚠️ Unknown platform: ${platformName}`);
+          result = { success: false, error: `Unknown platform: ${platformName}` };
         }
+      } catch (platformError) {
+        console.error(`❌ Error in ${platformName} publishing:`, platformError);
+        result = { success: false, error: platformError.message };
       }
-    });
-  }
-}
 
-      // 2. HANDLING RESULTS
-    // 2. HANDLING RESULTS
-if (result?.success) {
-  // Increment successCount for BOTH real and simulated successes
-  successCount++;
-
-  // Only create publishedPost record here for FB/IG/LinkedIn (not Twitter)
-  // Twitter function handles its own DB creation (real or simulated).
-  if (platformName !== 'TWITTER' && !result.simulated) {
-    // Check if record already exists to avoid duplicate constraint
-    const existingPost = await prisma.publishedPost.findUnique({
-      where: {
-        draftId_socialAccountId: {
-          draftId: draft.id,
-          socialAccountId: account.id
+      // 2. HANDLE PUBLISHING RESULTS
+      if (result?.success) {
+        successCount++;
+        
+        // Get platform-specific metrics or initialize with zeros
+        let metrics = {};
+        
+        if (platformName === 'FACEBOOK') {
+          metrics = {
+            likes: 0,
+            comments: 0,
+            shares: 0,
+            reach: 0,
+            ...(result.metrics || {})
+          };
+        } else if (platformName === 'INSTAGRAM') {
+          metrics = {
+            likes: 0,
+            comments: 0,
+            shares: 0,
+            reach: 0,
+            ...(result.metrics || {})
+          };
+        } else if (platformName === 'TWITTER') {
+          metrics = {
+            likes: 0,
+            retweets: 0,
+            replies: 0,
+            ...(result.metrics || {})
+          };
+        } else if (platformName === 'LINKEDIN') {
+          metrics = {
+            likes: 0,
+            comments: 0,
+            shares: 0,
+            ...(result.metrics || {})
+          };
         }
-      }
-    });
 
-    if (!existingPost) {
-      await prisma.publishedPost.create({
-        data: {
-          draftId: draft.id,
-          socialAccountId: account.id,
-          platformPostId: String(result.platformPostId),
-          status: 'PUBLISHED',
-          publishedAt: new Date()
+        // Create metadata object
+        const metadata = {
+          platform: account.platform,
+          url: result.url || null,
+          hasMedia: result.hasMedia || (mediaUrls && mediaUrls.length > 0) || false,
+          mediaCount: mediaUrls?.length || 0,
+          publishedAt: new Date().toISOString(),
+          method: result.method || 'direct',
+          simulated: result.simulated || false
+        };
+
+        // Add any platform-specific metadata
+        if (result.metadata) {
+          Object.assign(metadata, result.metadata);
         }
-      });
-      console.log(`✅ Created published post record for ${platformName}`);
-    } else {
-      // Update existing record
-      await prisma.publishedPost.update({
-        where: {
-          draftId_socialAccountId: {
-            draftId: draft.id,
-            socialAccountId: account.id
+
+        // Check if record already exists to avoid duplicate constraint
+        const existingPost = await prisma.publishedPost.findUnique({
+          where: {
+            draftId_socialAccountId: {
+              draftId: draft.id,
+              socialAccountId: account.id
+            }
           }
-        },
-        data: {
-          platformPostId: String(result.platformPostId),
-          status: 'PUBLISHED',
-          publishedAt: new Date()
+        });
+
+        if (!existingPost) {
+          // Create new published post record WITH METRICS
+          await prisma.publishedPost.create({
+            data: {
+              draftId: draft.id,
+              socialAccountId: account.id,
+              platformPostId: String(result.platformPostId || result.id || `sim_${Date.now()}`),
+              status: 'published',
+              publishedAt: new Date(),
+              metrics: metrics,
+              metadata: metadata
+            }
+          });
+          console.log(`✅ Created published post record for ${platformName} with metrics:`, metrics);
+        } else {
+          // Update existing record with new metrics and post ID
+          await prisma.publishedPost.update({
+            where: {
+              draftId_socialAccountId: {
+                draftId: draft.id,
+                socialAccountId: account.id
+              }
+            },
+            data: {
+              platformPostId: String(result.platformPostId || result.id || existingPost.platformPostId),
+              status: 'published',
+              publishedAt: new Date(),
+              metrics: metrics,
+              metadata: metadata
+            }
+          });
+          console.log(`🔄 Updated existing published post record for ${platformName} with metrics:`, metrics);
         }
-      });
-      console.log(`🔄 Updated existing published post record for ${platformName}`);
-    }
-  }
-}else {
-        console.error(`❌ Failed to publish to ${account.platform}:`, result?.error);
+
+        // Store result for response
+        publishedResults.push({
+          platform: account.platform,
+          accountName: account.accountName,
+          success: true,
+          platformPostId: result.platformPostId,
+          metrics: metrics,
+          url: result.url
+        });
+
+      } else {
+        console.error(`❌ Failed to publish to ${account.platform}:`, result?.error || 'Unknown error');
+        
+        // Store failed result
+        publishedResults.push({
+          platform: account.platform,
+          accountName: account.accountName,
+          success: false,
+          error: result?.error || 'Publishing failed'
+        });
       }
     }
 
@@ -841,18 +1209,110 @@ if (result?.success) {
           publishedId: String(new Date().getTime())
         }
       });
-    }
 
-    console.log(`✅ Final Result: Published draft ${draftId} to ${successCount} accounts (including simulations)`);
+      // ============ 📧 SEND PUBLISHED EMAIL NOTIFICATION ============
+      try {
+        // Get draft with user details
+        const publishedDraft = await prisma.draft.findUnique({
+          where: { id: draftId },
+          include: { 
+            user: {
+              select: { email: true, name: true }
+            } 
+          }
+        });
+
+        if (publishedDraft?.user?.email) {
+          const userEmail = publishedDraft.user.email;
+          const userName = publishedDraft.user.name || userEmail.split('@')[0];
+          
+          // Get platform names for the email
+          const platformNames = accounts.map(a => 
+            a.platform.charAt(0).toUpperCase() + a.platform.slice(1)
+          ).join(', ');
+
+          // Create transporter
+          const nodemailer = require('nodemailer');
+          const transporter = nodemailer.createTransport({
+            host: 'smtp.gmail.com',
+            port: 587,
+            secure: false,
+            auth: {
+              user: process.env.EMAIL_USER,
+              pass: process.env.EMAIL_PASS
+            },
+            tls: { rejectUnauthorized: false }
+          });
+
+          const mailOptions = {
+            from: `"LinkHub FYP" <${process.env.EMAIL_USER}>`,
+            to: userEmail,
+            subject: '🎉 Your Post Has Been Published!',
+            html: `
+              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f4f4f4; border-radius: 10px;">
+                <div style="text-align: center; margin-bottom: 20px;">
+                  <h2 style="color: #3b82f6;">Published Successfully! 🚀</h2>
+                </div>
+                
+                <p style="font-size: 16px; line-height: 1.6; color: #333;">Hello <strong>${userName}</strong>,</p>
+                
+                <p style="font-size: 16px; line-height: 1.6; color: #333;">Your post has been successfully published to your social media accounts!</p>
+                
+                <div style="background-color: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #3b82f6;">
+                  <p style="margin: 0 0 10px 0; font-weight: bold; color: #0369a1;">📢 Published to:</p>
+                  <p style="margin: 0; color: #333;">${platformNames}</p>
+                </div>
+                
+                <div style="background-color: #f9f9f9; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                  <p style="margin: 0 0 10px 0; font-weight: bold; color: #333;">📄 Your published content:</p>
+                  <p style="margin: 0; font-style: italic; color: #555;">"${publishedDraft.masterContent.substring(0, 150)}${publishedDraft.masterContent.length > 150 ? '...' : ''}"</p>
+                </div>
+                
+                <p style="font-size: 16px; line-height: 1.6; color: #333;">
+                  <strong>📊 Want to see how your post is performing?</strong> Check your analytics dashboard for engagement metrics.
+                </p>
+                
+                <div style="text-align: center; margin: 30px 0;">
+                  <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/analytics" 
+                     style="background-color: #10b981; color: white; padding: 12px 30px; 
+                            text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">
+                    View Analytics
+                  </a>
+                  <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/my-drafts" 
+                     style="background-color: #f3f4f6; color: #333; padding: 12px 30px; 
+                            text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block; margin-left: 10px;">
+                    My Posts
+                  </a>
+                </div>
+                
+                <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0 20px;">
+                <p style="font-size: 12px; color: #777; text-align: center; margin-bottom: 0;">
+                  This is an automated message from LinkHub. Please do not reply to this email.<br>
+                  © ${new Date().getFullYear()} LinkHub. All rights reserved.
+                </p>
+              </div>
+            `
+          };
+
+          await transporter.sendMail(mailOptions);
+          console.log(`📧 Published email sent to ${userEmail}`);
+        }
+      } catch (emailError) {
+        console.error('❌ Failed to send published email:', emailError.message);
+      }
+    }
+    
+    console.log(`✅ Final Result: Published draft ${draftId} to ${successCount} out of ${accounts.length} accounts`);
 
     if (res && typeof res.json === 'function') {
       return res.json({ 
         success: true, 
-        message: `Successfully published to ${successCount} out of ${accounts.length} accounts.` 
+        message: `Successfully published to ${successCount} out of ${accounts.length} accounts.`,
+        results: publishedResults
       });
     }
     
-    return { success: true, count: successCount };
+    return { success: true, count: successCount, results: publishedResults };
 
   } catch (error) {
     console.error('❌ Global Publish Error:', error);
@@ -889,28 +1349,174 @@ exports.linkedInWebhook = async (req, res) => {
     res.status(500).send('Error');
   }
 };
+// // this was running
+// exports.publishToInstagram = async (account, content, mediaUrls) => {
+//   try {
+//     console.log(`📤 Instagram Publish Started for: ${account.accountName}`);
+//     const fileName = mediaUrls[0].split('/').pop();
+//     const localPath = path.join(__dirname, '../../uploads/drafts', fileName);
+
+//     // Check if file actually exists before trying to upload
+//     if (!fs.existsSync(localPath)) {
+//       throw new Error(`File not found at: ${localPath}`);
+//     }
+
+//     // 2. Upload to Cloudinary (The Bridge)
+//     console.log("☁️ Uploading local file to Cloudinary...");
+//     const uploadRes = await cloudinary.uploader.upload(localPath, {
+//       folder: 'linkhub_instagram',
+//       resource_type: 'auto' // Supports jpg, png, and even video
+//     });
+    
+//     const secureUrl = uploadRes.secure_url;
+//     console.log(`✅ Cloudinary URL generated: ${secureUrl}`);
+
+//     // 3. Create Instagram Media Container
+//     console.log("📦 Creating Instagram media container...");
+//     const container = await axios.post(
+//       `https://graph.facebook.com/v16.0/${account.platformUserId}/media`,
+//       {
+//         image_url: secureUrl,
+//         caption: content,
+//         access_token: account.accessToken
+//       }
+//     );
+
+//     const containerId = container.data.id;
+
+//     // 4. Wait for Instagram to process the image
+//     let status = 'IN_PROGRESS';
+//     let attempts = 0;
+//     while (status !== 'FINISHED' && attempts < 10) {
+//       attempts++;
+//       await new Promise(res => setTimeout(res, 5000)); // Wait 5 seconds
+      
+//       const check = await axios.get(`https://graph.facebook.com/v16.0/${containerId}`, {
+//         params: { fields: 'status_code', access_token: account.accessToken }
+//       });
+      
+//       status = check.data.status_code;
+//       console.log(`🔄 Processing status: ${status} (Attempt ${attempts})`);
+      
+//       if (status === 'ERROR') throw new Error("Instagram rejected the image processing.");
+//     }
+
+//     // 5. Final Publish
+//     console.log("🚀 Publishing to Feed...");
+//     const publish = await axios.post(
+//       `https://graph.facebook.com/v16.0/${account.platformUserId}/media_publish`,
+//       {
+//         creation_id: containerId,
+//         access_token: account.accessToken
+//       }
+//     );
+
+//     console.log(`✅ Instagram Success! Post ID: ${publish.data.id}`);
+//     return { success: true, platformPostId: publish.data.id };
+
+//   } catch (err) {
+//     const errorMsg = err.response?.data?.error?.message || err.message;
+//     console.error('❌ IG Final Error:', errorMsg);
+//     return { success: false, error: errorMsg };
+//   }
+// };
+// // this was running
+// exports.publishToFacebook = async (account, content, mediaUrls) => {
+//   try {
+//     console.log(`📤 Facebook Publish Started for: ${account.accountName}`);
+    
+//     // 1. Get local file path
+//     const fileName = mediaUrls[0].split('/').pop();
+//     const localPath = path.join(__dirname, '../../uploads/drafts', fileName);
+
+//     // 2. Upload to Cloudinary for a public URL
+//     console.log("☁️ Uploading to Cloudinary for Facebook...");
+//     const uploadRes = await cloudinary.uploader.upload(localPath, {
+//       folder: 'linkhub_facebook'
+//     });
+
+//     // 3. Post to Facebook Page using the Cloudinary URL
+//     const response = await axios.post(
+//       `https://graph.facebook.com/v24.0/${account.platformUserId}/photos`,
+//       {
+//         url: uploadRes.secure_url,
+//         caption: content,
+//         access_token: account.accessToken
+//       }
+//     );
+
+//     console.log(`✅ Facebook Success! Post ID: ${response.data.id}`);
+//     return { success: true, platformPostId: response.data.id };
+
+//   } catch (err) {
+//     const errorMsg = err.response?.data?.error?.message || err.message;
+//     console.error('❌ Facebook Error:', errorMsg);
+//     return { success: false, error: errorMsg };
+//   }
+// };
+
+// For Facebook - update the return object in publishToFacebook
+exports.publishToFacebook = async (account, content, mediaUrls) => {
+  try {
+    console.log(`📤 Facebook Publish Started for: ${account.accountName}`);
+    
+    const fileName = mediaUrls[0].split('/').pop();
+    const localPath = path.join(__dirname, '../../uploads/drafts', fileName);
+
+    console.log("☁️ Uploading to Cloudinary for Facebook...");
+    const uploadRes = await cloudinary.uploader.upload(localPath, {
+      folder: 'linkhub_facebook'
+    });
+
+    const response = await axios.post(
+      `https://graph.facebook.com/v24.0/${account.platformUserId}/photos`,
+      {
+        url: uploadRes.secure_url,
+        caption: content,
+        access_token: account.accessToken
+      }
+    );
+
+    console.log(`✅ Facebook Success! Post ID: ${response.data.id}`);
+    
+    // Return WITH METRICS
+    return { 
+      success: true, 
+      platformPostId: response.data.id,
+      metrics: {  // 👈 Add this
+        likes: 0,
+        comments: 0,
+        shares: 0,
+        reach: 0
+      }
+    };
+
+  } catch (err) {
+    const errorMsg = err.response?.data?.error?.message || err.message;
+    console.error('❌ Facebook Error:', errorMsg);
+    return { success: false, error: errorMsg };
+  }
+};
+
+// For Instagram - update the return object in publishToInstagram
 exports.publishToInstagram = async (account, content, mediaUrls) => {
   try {
     console.log(`📤 Instagram Publish Started for: ${account.accountName}`);
     const fileName = mediaUrls[0].split('/').pop();
     const localPath = path.join(__dirname, '../../uploads/drafts', fileName);
 
-    // Check if file actually exists before trying to upload
     if (!fs.existsSync(localPath)) {
       throw new Error(`File not found at: ${localPath}`);
     }
 
-    // 2. Upload to Cloudinary (The Bridge)
     console.log("☁️ Uploading local file to Cloudinary...");
     const uploadRes = await cloudinary.uploader.upload(localPath, {
       folder: 'linkhub_instagram',
-      resource_type: 'auto' // Supports jpg, png, and even video
+      resource_type: 'auto'
     });
     
     const secureUrl = uploadRes.secure_url;
-    console.log(`✅ Cloudinary URL generated: ${secureUrl}`);
 
-    // 3. Create Instagram Media Container
     console.log("📦 Creating Instagram media container...");
     const container = await axios.post(
       `https://graph.facebook.com/v16.0/${account.platformUserId}/media`,
@@ -923,12 +1529,12 @@ exports.publishToInstagram = async (account, content, mediaUrls) => {
 
     const containerId = container.data.id;
 
-    // 4. Wait for Instagram to process the image
+    // Wait for processing
     let status = 'IN_PROGRESS';
     let attempts = 0;
     while (status !== 'FINISHED' && attempts < 10) {
       attempts++;
-      await new Promise(res => setTimeout(res, 5000)); // Wait 5 seconds
+      await new Promise(res => setTimeout(res, 5000));
       
       const check = await axios.get(`https://graph.facebook.com/v16.0/${containerId}`, {
         params: { fields: 'status_code', access_token: account.accessToken }
@@ -940,7 +1546,6 @@ exports.publishToInstagram = async (account, content, mediaUrls) => {
       if (status === 'ERROR') throw new Error("Instagram rejected the image processing.");
     }
 
-    // 5. Final Publish
     console.log("🚀 Publishing to Feed...");
     const publish = await axios.post(
       `https://graph.facebook.com/v16.0/${account.platformUserId}/media_publish`,
@@ -951,45 +1556,22 @@ exports.publishToInstagram = async (account, content, mediaUrls) => {
     );
 
     console.log(`✅ Instagram Success! Post ID: ${publish.data.id}`);
-    return { success: true, platformPostId: publish.data.id };
+    
+    // Return WITH METRICS
+    return { 
+      success: true, 
+      platformPostId: publish.data.id,
+      metrics: {  // 👈 Add this
+        likes: 0,
+        comments: 0,
+        shares: 0,
+        reach: 0
+      }
+    };
 
   } catch (err) {
     const errorMsg = err.response?.data?.error?.message || err.message;
     console.error('❌ IG Final Error:', errorMsg);
-    return { success: false, error: errorMsg };
-  }
-};
-
-exports.publishToFacebook = async (account, content, mediaUrls) => {
-  try {
-    console.log(`📤 Facebook Publish Started for: ${account.accountName}`);
-    
-    // 1. Get local file path
-    const fileName = mediaUrls[0].split('/').pop();
-    const localPath = path.join(__dirname, '../../uploads/drafts', fileName);
-
-    // 2. Upload to Cloudinary for a public URL
-    console.log("☁️ Uploading to Cloudinary for Facebook...");
-    const uploadRes = await cloudinary.uploader.upload(localPath, {
-      folder: 'linkhub_facebook'
-    });
-
-    // 3. Post to Facebook Page using the Cloudinary URL
-    const response = await axios.post(
-      `https://graph.facebook.com/v24.0/${account.platformUserId}/photos`,
-      {
-        url: uploadRes.secure_url,
-        caption: content,
-        access_token: account.accessToken
-      }
-    );
-
-    console.log(`✅ Facebook Success! Post ID: ${response.data.id}`);
-    return { success: true, platformPostId: response.data.id };
-
-  } catch (err) {
-    const errorMsg = err.response?.data?.error?.message || err.message;
-    console.error('❌ Facebook Error:', errorMsg);
     return { success: false, error: errorMsg };
   }
 };
@@ -1004,50 +1586,9 @@ async function checkTunnelStatus() {
     return false;
   }
 }
-exports.getFacebookMetrics = async (account, postId) => {
-  try {
-    const response = await axios.get(
-      `https://graph.facebook.com/v16.0/${postId}/insights`,
-      {
-        params: {
-          access_token: account.accessToken,
-          metric: 'post_impressions,post_engaged_users,post_clicks',
-          period: 'lifetime'
-        }
-      }
-    );
-    const metrics = {};
-    response.data.data.forEach(metric => {
-      metrics[metric.name] = metric.values[0].value;
-    });
-    return metrics;
-  } catch (error) {
-    console.log('⚠️ Could not fetch Facebook metrics:', error.message);
-    return {};
-  }
-};
-exports.getInstagramMetrics = async (account, mediaId) => {
-  try {
-    const response = await axios.get(
-      `https://graph.facebook.com/v16.0/${mediaId}/insights`,
-      {
-        params: {
-          access_token: account.accessToken,
-          metric: 'impressions,reach,engagement,saved',
-          period: 'lifetime'
-        }
-      }
-    );
-    const metrics = {};
-    response.data.data.forEach(metric => {
-      metrics[metric.name] = metric.values[0].value;
-    });
-    return metrics;
-  } catch (error) {
-    console.log('⚠️ Could not fetch Instagram metrics:', error.message);
-    return {};
-  }
-};
+
+
+
 exports.publishToTwitter = async (account, content, mediaUrls, draftId = null) => {
   try {
     console.log(`🐦 Publishing to Twitter: @${account.accountName}`);
@@ -1327,59 +1868,7 @@ function getMimeType(filename) {
   };
   return mimeTypes[ext] || 'image/jpeg';
 }
-async function publishTextOnlyWithOAuth2(account, content, draftId) {
-  try {
-    // First, ensure token is fresh
-    const freshAccount = await ensureFreshTwitterToken(account);
-    if (!freshAccount) {
-      throw new Error('Failed to refresh Twitter token');
-    }
-    
-    const tweetText = content.slice(0, 280);
-    
-    // Post text-only tweet with OAuth 2.0
-    const response = await axios.post(
-      'https://api.twitter.com/2/tweets',
-      { text: tweetText },
-      {
-        headers: {
-          'Authorization': `Bearer ${freshAccount.accessToken}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-    
-    const tweetId = response.data.data.id;
-    console.log(`✅ Text-only tweet published via OAuth 2.0! ID: ${tweetId}`);
-    
-    // Save to database
-    if (draftId) {
-      await prisma.publishedPost.create({
-        data: {
-          draftId: parseInt(draftId),
-          socialAccountId: parseInt(account.id),
-          platformPostId: String(tweetId),
-          status: 'published',
-          publishedAt: new Date(),
-          metadata: {
-            method: 'oauth2_text_only',
-            note: 'Media not supported with current OAuth 2.0 setup'
-          }
-        }
-      });
-    }
-    
-    return { 
-      success: true, 
-      platformPostId: tweetId,
-      hasMedia: false
-    };
-    
-  } catch (error) {
-    console.error('❌ OAuth 2.0 text-only failed:', error.message);
-    throw error;
-  }
-}
+
 // Add this PUBLIC debug function to socialController.js
 exports.publicFileDebug = async (req, res) => {
   try {
@@ -2632,47 +3121,7 @@ async function tryOAuth1aPosting(account, content, draftId) {
   }
 }
 
-// Helper function
-async function simulateTwitterPost(account, content, draftId, errorReason) {
-  try {
-    console.log(`⚠️ Simulating tweet for @${account.accountName}`);
-    
-    const fakeId = `sim_tw_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
-    if (draftId) {
-      await prisma.publishedPost.create({
-        data: {
-          draftId: parseInt(draftId),
-          socialAccountId: parseInt(account.id),
-          platformPostId: fakeId,
-          status: 'published',
-          publishedAt: new Date(),
-          errorMessage: `Simulated: ${errorReason}`,
-          metadata: {
-            simulated: true,
-            reason: errorReason,
-            content: content.substring(0, 100),
-            timestamp: new Date().toISOString()
-          }
-        }
-      });
-    }
-    
-    return { 
-      success: true, 
-      platformPostId: fakeId, 
-      simulated: true,
-      message: `Simulated tweet (Real post failed: ${errorReason})`
-    };
-    
-  } catch (simError) {
-    console.error('❌ Simulation failed:', simError);
-    return { 
-      success: false, 
-      error: errorReason
-    };
-  }
-}
+
 // Helper function for simulation
 async function simulateTwitterPost(account, content, draftId, errorReason) {
   try {
@@ -2968,63 +3417,64 @@ exports.twitterOAuth1Callback = async (req, res) => {
 };
 // Add these test functions to your socialController.js
 
-// Add this simple test function
-exports.testSimpleTwitter = async (req, res) => {
-  try {
-    console.log('🧪 Simple Twitter test...');
+// // Add this simple test function
+// exports.testSimpleTwitter = async (req, res) => {
+//   try {
+//     console.log('🧪 Simple Twitter test...');
     
-    // Check credentials
-    console.log('🔍 Checking credentials...');
-    console.log('TWITTER_API_KEY exists:', !!process.env.TWITTER_API_KEY);
-    console.log('TWITTER_API_SECRET exists:', !!process.env.TWITTER_API_SECRET);
-    console.log('TWITTER_ACCESS_TOKEN exists:', !!process.env.TWITTER_ACCESS_TOKEN);
-    console.log('TWITTER_ACCESS_SECRET exists:', !!process.env.TWITTER_ACCESS_SECRET);
+//     // Check credentials
+//     console.log('🔍 Checking credentials...');
+//     console.log('TWITTER_API_KEY exists:', !!process.env.TWITTER_API_KEY);
+//     console.log('TWITTER_API_SECRET exists:', !!process.env.TWITTER_API_SECRET);
+//     console.log('TWITTER_ACCESS_TOKEN exists:', !!process.env.TWITTER_ACCESS_TOKEN);
+//     console.log('TWITTER_ACCESS_SECRET exists:', !!process.env.TWITTER_ACCESS_SECRET);
     
-    if (!process.env.TWITTER_API_KEY || 
-        !process.env.TWITTER_API_SECRET || 
-        !process.env.TWITTER_ACCESS_TOKEN || 
-        !process.env.TWITTER_ACCESS_SECRET) {
-      return res.json({
-        success: false,
-        error: 'Missing OAuth 1.0a credentials',
-        message: 'Check your .env file for Twitter credentials'
-      });
-    }
+//     if (!process.env.TWITTER_API_KEY || 
+//         !process.env.TWITTER_API_SECRET || 
+//         !process.env.TWITTER_ACCESS_TOKEN || 
+//         !process.env.TWITTER_ACCESS_SECRET) {
+//       return res.json({
+//         success: false,
+//         error: 'Missing OAuth 1.0a credentials',
+//         message: 'Check your .env file for Twitter credentials'
+//       });
+//     }
     
-    const twitterClient = new TwitterApi({
-      appKey: process.env.TWITTER_API_KEY,
-      appSecret: process.env.TWITTER_API_SECRET,
-      accessToken: process.env.TWITTER_ACCESS_TOKEN,
-      accessSecret: process.env.TWITTER_ACCESS_SECRET,
-    });
+//     const twitterClient = new TwitterApi({
+//       appKey: process.env.TWITTER_API_KEY,
+//       appSecret: process.env.TWITTER_API_SECRET,
+//       accessToken: process.env.TWITTER_ACCESS_TOKEN,
+//       accessSecret: process.env.TWITTER_ACCESS_SECRET,
+//     });
     
-    // Just get user info (doesn't require posting credits)
-    console.log('🔄 Getting app user info...');
-    const me = await twitterClient.v2.me();
+//     // Just get user info (doesn't require posting credits)
+//     console.log('🔄 Getting app user info...');
+//     const me = await twitterClient.v2.me();
     
-    res.json({
-      success: true,
-      message: 'Twitter OAuth 1.0a credentials are valid!',
-      appAccount: me.data,
-      tier: 'Free',
-      postingStatus: 'Credits likely depleted. Need Essential access for posting.'
-    });
+//     res.json({
+//       success: true,
+//       message: 'Twitter OAuth 1.0a credentials are valid!',
+//       appAccount: me.data,
+//       tier: 'Free',
+//       postingStatus: 'Credits likely depleted. Need Essential access for posting.'
+//     });
     
-  } catch (error) {
-    console.error('❌ Simple Twitter test failed:', error.message);
+//   } catch (error) {
+//     console.error('❌ Simple Twitter test failed:', error.message);
     
-    res.json({
-      success: false,
-      error: error.message,
-      details: error.data || error.response?.data,
-      commonFixes: [
-        '1. Check if app has Read+Write permissions in Twitter Developer Portal',
-        '2. Verify OAuth 1.0a credentials are correct',
-        '3. Apply for Essential access (Free tier may not have posting)'
-      ]
-    });
-  }
-};
+//     res.json({
+//       success: false,
+//       error: error.message,
+//       details: error.data || error.response?.data,
+//       commonFixes: [
+//         '1. Check if app has Read+Write permissions in Twitter Developer Portal',
+//         '2. Verify OAuth 1.0a credentials are correct',
+//         '3. Apply for Essential access (Free tier may not have posting)'
+//       ]
+//     });
+//   }
+// };
+
 
 // Add this test function
 exports.testTwitterPost = async (req, res) => {
@@ -3073,77 +3523,77 @@ exports.testTwitterPost = async (req, res) => {
   }
 };
 
-// Add to socialController.js
-exports.checkOAuth2Setup = async (req, res) => {
-  try {
-    console.log('🔍 Checking OAuth 2.0 setup...');
+// // Add to socialController.js
+// exports.checkOAuth2Setup = async (req, res) => {
+//   try {
+//     console.log('🔍 Checking OAuth 2.0 setup...');
     
-    // Check if OAuth 2.0 credentials exist
-    const hasOAuth2 = process.env.TWITTER_CLIENT_ID && process.env.TWITTER_CLIENT_SECRET;
-    const hasOAuth1 = process.env.TWITTER_API_KEY && process.env.TWITTER_API_SECRET;
+//     // Check if OAuth 2.0 credentials exist
+//     const hasOAuth2 = process.env.TWITTER_CLIENT_ID && process.env.TWITTER_CLIENT_SECRET;
+//     const hasOAuth1 = process.env.TWITTER_API_KEY && process.env.TWITTER_API_SECRET;
     
-    if (!hasOAuth2) {
-      return res.json({
-        success: false,
-        message: 'OAuth 2.0 credentials missing in .env',
-        required: ['TWITTER_CLIENT_ID', 'TWITTER_CLIENT_SECRET'],
-        currentStatus: {
-          hasClientId: !!process.env.TWITTER_CLIENT_ID,
-          hasClientSecret: !!process.env.TWITTER_CLIENT_SECRET,
-          hasRedirectUri: !!process.env.TWITTER_REDIRECT_URI
-        },
-        action: '1. Configure OAuth 2.0 in Twitter app settings\n2. Get Client ID/Secret\n3. Update .env file'
-      });
-    }
+//     if (!hasOAuth2) {
+//       return res.json({
+//         success: false,
+//         message: 'OAuth 2.0 credentials missing in .env',
+//         required: ['TWITTER_CLIENT_ID', 'TWITTER_CLIENT_SECRET'],
+//         currentStatus: {
+//           hasClientId: !!process.env.TWITTER_CLIENT_ID,
+//           hasClientSecret: !!process.env.TWITTER_CLIENT_SECRET,
+//           hasRedirectUri: !!process.env.TWITTER_REDIRECT_URI
+//         },
+//         action: '1. Configure OAuth 2.0 in Twitter app settings\n2. Get Client ID/Secret\n3. Update .env file'
+//       });
+//     }
     
-    // Generate OAuth URL to test
-    const scopes = ['tweet.read', 'tweet.write', 'users.read', 'media.write','offline.access'];
-    const scopesEncoded = encodeURIComponent(scopes.join(' '));
+//     // Generate OAuth URL to test
+//     const scopes = ['tweet.read', 'tweet.write', 'users.read', 'media.write','offline.access'];
+//     const scopesEncoded = encodeURIComponent(scopes.join(' '));
     
-    const state = crypto.randomBytes(16).toString('hex');
-    const codeVerifier = crypto.randomBytes(32).toString('hex');
-    const codeChallenge = crypto
-      .createHash('sha256')
-      .update(codeVerifier)
-      .digest('base64')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=/g, '');
+//     const state = crypto.randomBytes(16).toString('hex');
+//     const codeVerifier = crypto.randomBytes(32).toString('hex');
+//     const codeChallenge = crypto
+//       .createHash('sha256')
+//       .update(codeVerifier)
+//       .digest('base64')
+//       .replace(/\+/g, '-')
+//       .replace(/\//g, '_')
+//       .replace(/=/g, '');
     
-    const authUrl = `https://twitter.com/i/oauth2/authorize?` +
-      `response_type=code&` +
-      `client_id=${process.env.TWITTER_CLIENT_ID}&` +
-      `redirect_uri=${encodeURIComponent(process.env.TWITTER_REDIRECT_URI)}&` +
-      `scope=${scopesEncoded}&` +
-      `state=${state}&` +
-      `code_challenge=${codeChallenge}&` +
-      `code_challenge_method=S256`;
+//     const authUrl = `https://twitter.com/i/oauth2/authorize?` +
+//       `response_type=code&` +
+//       `client_id=${process.env.TWITTER_CLIENT_ID}&` +
+//       `redirect_uri=${encodeURIComponent(process.env.TWITTER_REDIRECT_URI)}&` +
+//       `scope=${scopesEncoded}&` +
+//       `state=${state}&` +
+//       `code_challenge=${codeChallenge}&` +
+//       `code_challenge_method=S256`;
     
-    res.json({
-      success: true,
-      message: 'OAuth 2.0 is configured in .env',
-      credentials: {
-        clientId: process.env.TWITTER_CLIENT_ID ? 'Present' : 'Missing',
-        clientSecret: process.env.TWITTER_CLIENT_SECRET ? 'Present' : 'Missing',
-        redirectUri: process.env.TWITTER_REDIRECT_URI
-      },
-      oauth1: {
-        apiKey: process.env.TWITTER_API_KEY ? 'Present' : 'Missing',
-        apiSecret: process.env.TWITTER_API_SECRET ? 'Present' : 'Missing'
-      },
-      testUrl: authUrl,
-      nextSteps: [
-        '1. Use the test URL above to authorize your app',
-        '2. After authorization, Twitter will redirect with a code',
-        '3. Your app will exchange code for access token'
-      ]
-    });
+//     res.json({
+//       success: true,
+//       message: 'OAuth 2.0 is configured in .env',
+//       credentials: {
+//         clientId: process.env.TWITTER_CLIENT_ID ? 'Present' : 'Missing',
+//         clientSecret: process.env.TWITTER_CLIENT_SECRET ? 'Present' : 'Missing',
+//         redirectUri: process.env.TWITTER_REDIRECT_URI
+//       },
+//       oauth1: {
+//         apiKey: process.env.TWITTER_API_KEY ? 'Present' : 'Missing',
+//         apiSecret: process.env.TWITTER_API_SECRET ? 'Present' : 'Missing'
+//       },
+//       testUrl: authUrl,
+//       nextSteps: [
+//         '1. Use the test URL above to authorize your app',
+//         '2. After authorization, Twitter will redirect with a code',
+//         '3. Your app will exchange code for access token'
+//       ]
+//     });
     
-  } catch (error) {
-    console.error('OAuth 2.0 check failed:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
+//   } catch (error) {
+//     console.error('OAuth 2.0 check failed:', error);
+//     res.status(500).json({ success: false, error: error.message });
+//   }
+// };
 // Add this to socialController.js
 exports.checkTwitterToken = async (req, res) => {
   try {
@@ -3429,4 +3879,678 @@ exports.testCurrentTwitterSetup = async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
+
+// Add to socialController.js
+
+exports.fetchPostMetrics = async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const userId = req.user.userId;
+
+    const publishedPost = await prisma.publishedPost.findFirst({
+      where: {
+        id: parseInt(postId),
+        socialAccount: {
+          userId: parseInt(userId)
+        }
+      },
+      include: {
+        socialAccount: true
+      }
+    });
+
+    if (!publishedPost) {
+      return res.status(404).json({
+        success: false,
+        message: 'Post not found'
+      });
+    }
+
+    let metrics = {};
+
+    if (publishedPost.socialAccount.platform === 'facebook') {
+      metrics = await exports.getFacebookMetrics(
+        publishedPost.socialAccount, 
+        publishedPost.platformPostId
+      );
+    } else if (publishedPost.socialAccount.platform === 'instagram') {
+      metrics = await
+       exports.getInstagramMetrics(
+        publishedPost.socialAccount, 
+        publishedPost.platformPostId
+      );
+    } else if (publishedPost.socialAccount.platform === 'twitter') {
+      // Twitter metrics would go here
+      metrics = { likes: 0, retweets: 0, replies: 0 };
+    } else if (publishedPost.socialAccount.platform === 'linkedin') {
+      // LinkedIn metrics would go here
+      metrics = { likes: 0, comments: 0, shares: 0 };
+    }
+
+    // Update the post with metrics
+    if (Object.keys(metrics).length > 0) {
+      await prisma.publishedPost.update({
+        where: { id: publishedPost.id },
+        data: { metrics }
+      });
+    }
+
+    res.json({
+      success: true,
+      data: metrics
+    });
+  } catch (error) {
+    console.error('Error fetching post metrics:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch metrics',
+      error: error.message
+    });
+  }
+};
+
+exports.fetchFacebookPageInsights = async (socialAccount, accessToken) => {
+  try {
+    const pageId = socialAccount.metadata?.pageId || socialAccount.platformUserId;
+    
+    if (!pageId) {
+      console.log('No page ID found for Facebook account');
+      return null;
+    }
+
+    console.log(`📘 Fetching Facebook data for ${socialAccount.accountName}`);
+    console.log(`   Using Page ID: ${pageId}`);
+
+    // Get page info with fan count
+    let followerCount = 0;
+    try {
+      const pageUrl = `https://graph.facebook.com/v18.0/${pageId}`;
+      const pageRes = await axios.get(pageUrl, {
+        params: {
+          fields: 'fan_count',
+          access_token: accessToken
+        }
+      });
+      followerCount = pageRes.data.fan_count || 0;
+    } catch (err) {
+      console.error('   Could not fetch follower count:', err.message);
+    }
+
+    // Get posts using the correct endpoint
+    let totalLikes = 0;
+    let totalComments = 0;
+    let totalShares = 0;
+    let postsCount = 0;
+    
+    try {
+      // Use 'posts' endpoint instead of 'published_posts' or 'feed'
+      const postsUrl = `https://graph.facebook.com/v18.0/${pageId}/posts`;
+      const postsRes = await axios.get(postsUrl, {
+        params: {
+          fields: 'id,message,likes.limit(0).summary(true),comments.limit(0).summary(true)',
+          limit: 100,
+          access_token: accessToken
+        }
+      });
+
+      if (postsRes.data.data) {
+        postsCount = postsRes.data.data.length;
+        
+        // For each post, get full metrics
+        for (const post of postsRes.data.data) {
+          // Get likes count
+          totalLikes += post.likes?.summary?.total_count || 0;
+          
+          // Get comments count
+          totalComments += post.comments?.summary?.total_count || 0;
+          
+          // For shares, we need a separate call per post
+          try {
+            const sharesUrl = `https://graph.facebook.com/v18.0/${post.id}/sharedposts`;
+            const sharesRes = await axios.get(sharesUrl, {
+              params: {
+                summary: 'total_count',
+                access_token: accessToken
+              }
+            });
+            totalShares += sharesRes.data.summary?.total_count || 0;
+          } catch (e) {
+            // Shares not available for this post
+          }
+        }
+        
+        console.log(`   Found ${postsCount} posts`);
+        console.log(`   Total likes: ${totalLikes}, comments: ${totalComments}, shares: ${totalShares}`);
+      }
+    } catch (postsError) {
+      console.log('   Could not fetch posts:', postsError.message);
+    }
+
+    return {
+      followers: followerCount,
+      likes: totalLikes,
+      comments: totalComments,
+      shares: totalShares,
+      reach: 0,
+      impressions: 0,
+      profileViews: 0,
+      mediaCount: postsCount
+    };
+  } catch (error) {
+    console.error('Error fetching Facebook data:', error.message);
+    return null;
+  }
+};
+exports.fetchInstagramInsights = async (socialAccount, accessToken) => {
+  try {
+    const instagramId = socialAccount.metadata?.instagramId || socialAccount.platformUserId;
+    
+    if (!instagramId) {
+      console.log('No Instagram ID found');
+      return null;
+    }
+
+    console.log(`📸 Fetching Instagram data for ${socialAccount.accountName}`);
+
+    // Get account info with follower count
+    let followerCount = 0;
+    let mediaCount = 0;
+    try {
+      const accountUrl = `https://graph.facebook.com/v18.0/${instagramId}`;
+      const accountRes = await axios.get(accountUrl, {
+        params: {
+          fields: 'followers_count,media_count',
+          access_token: accessToken
+        }
+      });
+      followerCount = accountRes.data.followers_count || 0;
+      mediaCount = accountRes.data.media_count || 0;
+      console.log(`   Followers: ${followerCount}, Total Media: ${mediaCount}`);
+    } catch (err) {
+      console.log('   Could not fetch account info:', err.message);
+    }
+
+    // Get recent media to calculate likes/comments
+    let totalLikes = 0;
+    let totalComments = 0;
+    let processedPosts = 0;
+    
+    try {
+      const mediaUrl = `https://graph.facebook.com/v18.0/${instagramId}/media`;
+      const mediaRes = await axios.get(mediaUrl, {
+        params: {
+          fields: 'id,like_count,comments_count',
+          limit: 50,
+          access_token: accessToken
+        }
+      });
+
+      if (mediaRes.data.data) {
+        processedPosts = mediaRes.data.data.length;
+        
+        mediaRes.data.data.forEach(media => {
+          totalLikes += media.like_count || 0;
+          totalComments += media.comments_count || 0;
+        });
+
+        console.log(`   Processed ${processedPosts} posts`);
+        console.log(`   Total likes: ${totalLikes}, Total comments: ${totalComments}`);
+      }
+    } catch (err) {
+      console.log('   Could not fetch media insights:', err.message);
+    }
+
+    return {
+      followers: followerCount,
+      likes: totalLikes,
+      comments: totalComments,
+      shares: 0,
+      reach: 0,
+      impressions: 0,
+      profileViews: 0,
+      mediaCount: mediaCount
+    };
+  } catch (error) {
+    console.error('Error fetching Instagram data:', error.response?.data || error.message);
+    return null;
+  }
+};
+
+exports.storeUserAnalytics = async (userId) => {
+  try {
+    console.log(`📊 Storing analytics for user ${userId}`);
+    
+    // First, verify the user exists
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+    
+    if (!user) {
+      console.log(`❌ User ${userId} not found!`);
+      return 0;
+    }
+    
+    // Get all connected social accounts for THIS user
+    const socialAccounts = await prisma.socialConnection.findMany({
+      where: { 
+        userId: userId,
+        isConnected: true 
+      }
+    });
+
+    console.log(`📊 Found ${socialAccounts.length} connected accounts for user ${userId}:`, 
+      socialAccounts.map(a => ({ id: a.id, platform: a.platform, name: a.accountName })));
+
+    if (socialAccounts.length === 0) {
+      console.log(`⚠️ No connected accounts found for user ${userId}`);
+      return 0;
+    }
+
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    yesterday.setHours(0, 0, 0, 0);
+
+    let storedCount = 0;
+
+    for (const account of socialAccounts) {
+      console.log(`\n📊 Processing account: ${account.platform} - ${account.accountName} (ID: ${account.id})`);
+      
+      // Double-check this account exists in the database
+      const verifyAccount = await prisma.socialConnection.findUnique({
+        where: { id: account.id }
+      });
+      
+      if (!verifyAccount) {
+        console.log(`❌ Account ID ${account.id} not found in SocialConnection table! Skipping...`);
+        continue;
+      }
+      
+      console.log(`✅ Account verified: ${verifyAccount.platform} - ${verifyAccount.accountName}`);
+
+      let insights = null;
+
+      if (account.platform === 'facebook') {
+        insights = await exports.fetchFacebookPageInsights(account, account.accessToken);
+      } else if (account.platform === 'instagram') {
+        insights = await exports.fetchInstagramInsights(account, account.accessToken);
+      } else {
+        console.log(`   Skipping ${account.platform} - not supported for analytics`);
+        continue;
+      }
+
+      if (insights) {
+        // Prepare data - WITHOUT reach and impressions
+        const analyticsData = {
+          followers: insights.followers || 0,
+          likes: insights.likes || 0,
+          comments: insights.comments || 0,
+          shares: insights.shares || 0,
+          mediaCount: insights.mediaCount || 0
+          // reach and impressions removed as requested
+        };
+
+        console.log(`   Analytics data (without reach/impressions):`, analyticsData);
+
+        try {
+          // Check if analytics already exist for this date and account
+          const existing = await prisma.analytics.findFirst({
+            where: {
+              socialAccountId: account.id,
+              date: yesterday
+            }
+          });
+
+          if (existing) {
+            // Update existing
+            await prisma.analytics.update({
+              where: { id: existing.id },
+              data: analyticsData
+            });
+            console.log(`✅ Updated analytics for ${account.platform} - ${account.accountName}`);
+            storedCount++;
+          } else {
+            // Create new
+            await prisma.analytics.create({
+              data: {
+                socialAccountId: account.id,
+                date: yesterday,
+                ...analyticsData
+              }
+            });
+            console.log(`✅ Created analytics for ${account.platform} - ${account.accountName}`);
+            storedCount++;
+          }
+        } catch (dbError) {
+          console.error(`❌ Database error for account ${account.id}:`, dbError.message);
+        }
+      } else {
+        console.log(`   No insights returned for ${account.platform}`);
+      }
+    }
+
+    console.log(`\n✅ Stored/Updated ${storedCount} analytics records for user ${userId}`);
+    return storedCount;
+  } catch (error) {
+    console.error('Error in storeUserAnalytics:', error);
+    throw error;
+  }
+};
+exports.syncInstagramPostsForAccount = async (account) => {
+  try {
+    console.log(`🔄 Syncing Instagram posts for ${account.accountName}`);
+    
+    const instagramId = account.metadata?.instagramId || account.platformUserId;
+    
+    if (!instagramId) {
+      console.log(`   No Instagram ID for ${account.accountName}`);
+      return 0;
+    }
+
+    // Fetch recent media from Instagram
+    const mediaUrl = `https://graph.facebook.com/v18.0/${instagramId}/media`;
+    const mediaRes = await axios.get(mediaUrl, {
+      params: {
+        fields: 'id,like_count,comments_count,timestamp',
+        limit: 50,
+        access_token: account.accessToken
+      }
+    });
+
+    if (!mediaRes.data.data) return 0;
+
+    console.log(`   Found ${mediaRes.data.data.length} Instagram posts`);
+    
+    let syncedCount = 0;
+
+    for (const media of mediaRes.data.data) {
+      // Check if post already exists for this account
+      const existingPost = await prisma.publishedPost.findFirst({
+        where: {
+          socialAccountId: account.id,
+          platformPostId: media.id
+        }
+      });
+
+      if (!existingPost) {
+        // Create a draft if needed
+        const draft = await prisma.draft.create({
+          data: {
+            userId: account.userId,
+            masterContent: `Instagram post from ${new Date(media.timestamp).toLocaleDateString()}`,
+            status: 'PUBLISHED',
+            mediaUrls: []
+          }
+        });
+
+        // Create published post record
+        await prisma.publishedPost.create({
+          data: {
+            draftId: draft.id,
+            socialAccountId: account.id,
+            platformPostId: media.id,
+            status: 'published',
+            publishedAt: new Date(media.timestamp),
+            metrics: {
+              likes: media.like_count || 0,
+              comments: media.comments_count || 0,
+              shares: 0
+            }
+          }
+        });
+        syncedCount++;
+        console.log(`   ✅ Synced new post ${media.id}`);
+      } else {
+        // Update metrics for existing post
+        await prisma.publishedPost.update({
+          where: { id: existingPost.id },
+          data: {
+            metrics: {
+              likes: media.like_count || 0,
+              comments: media.comments_count || 0,
+              shares: 0
+            }
+          }
+        });
+        console.log(`   ✅ Updated metrics for post ${media.id}`);
+      }
+    }
+
+    return syncedCount;
+  } catch (err) {
+    console.error(`   Error syncing Instagram posts:`, err.message);
+    return 0;
+  }
+};
+
+// Fix syncInstagramPosts to use the account-specific function
+exports.syncInstagramPosts = async (userId) => {
+  try {
+    console.log(`🔄 Syncing Instagram posts for user ${userId}`);
+    
+    const instagramAccounts = await prisma.socialConnection.findMany({
+      where: {
+        userId,
+        platform: 'instagram',
+        isConnected: true
+      }
+    });
+
+    let totalSynced = 0;
+
+    for (const account of instagramAccounts) {
+      const synced = await exports.syncInstagramPostsForAccount(account);
+      totalSynced += synced;
+    }
+
+    console.log(`✅ Synced ${totalSynced} new Instagram posts total`);
+    return totalSynced;
+  } catch (error) {
+    console.error('Error syncing Instagram posts:', error);
+    throw error;
+  }
+};
+
+// In socialController.js - Updated for PAGE tokens
+
+exports.getFacebookMetrics = async (socialAccount, postId) => {
+  try {
+    console.log(`📊 Fetching Facebook metrics for post ${postId}`);
+    
+    let likes = 0;
+    let comments = 0;
+    let shares = 0;
+    
+    // For PAGE tokens, we need to use the page-scoped post ID format
+    // Sometimes it's {pageId}_{postId} instead of just postId
+    const pageId = socialAccount.platformUserId; // This is your page ID
+    const scopedPostId = `${pageId}_${postId}`;
+    
+    console.log(`   Using page ID: ${pageId}`);
+    console.log(`   Trying scoped post ID: ${scopedPostId}`);
+    
+    // APPROACH 1: Try with scoped post ID first
+    try {
+      console.log('   Attempting to fetch comments with scoped ID...');
+      const commentsUrl = `https://graph.facebook.com/v18.0/${scopedPostId}/comments`;
+      const commentsRes = await axios.get(commentsUrl, {
+        params: {
+          summary: 'total_count',
+          access_token: socialAccount.accessToken,
+          fields: 'id,message,created_time'
+        }
+      });
+      
+      comments = commentsRes.data.summary?.total_count || 0;
+      console.log(`   Comments from scoped ID: ${comments}`);
+      
+      if (commentsRes.data.data && commentsRes.data.data.length > 0) {
+        console.log(`   Sample comment:`, commentsRes.data.data[0]);
+      }
+    } catch (err) {
+      console.log(`   Scoped ID comments failed:`, err.response?.data?.error?.message || err.message);
+    }
+
+    // APPROACH 2: If scoped ID fails, try regular post ID
+    if (comments === 0) {
+      try {
+        console.log('   Attempting to fetch comments with regular ID...');
+        const commentsUrl = `https://graph.facebook.com/v18.0/${postId}/comments`;
+        const commentsRes = await axios.get(commentsUrl, {
+          params: {
+            summary: 'total_count',
+            access_token: socialAccount.accessToken,
+            fields: 'id,message,created_time'
+          }
+        });
+        
+        comments = commentsRes.data.summary?.total_count || 0;
+        console.log(`   Comments from regular ID: ${comments}`);
+      } catch (err) {
+        console.log(`   Regular ID comments failed:`, err.response?.data?.error?.message || err.message);
+      }
+    }
+
+    // Get shares
+    try {
+      console.log('   Attempting to fetch shares...');
+      const sharesUrl = `https://graph.facebook.com/v18.0/${postId}/sharedposts`;
+      const sharesRes = await axios.get(sharesUrl, {
+        params: {
+          summary: 'total_count',
+          access_token: socialAccount.accessToken
+        }
+      });
+      shares = sharesRes.data.summary?.total_count || 0;
+      console.log(`   Shares: ${shares}`);
+    } catch (err) {
+      console.log(`   Shares not available for this post type`);
+    }
+
+    // Get likes
+    try {
+      console.log('   Attempting to fetch likes...');
+      const likesUrl = `https://graph.facebook.com/v18.0/${postId}/likes`;
+      const likesRes = await axios.get(likesUrl, {
+        params: {
+          summary: 'total_count',
+          access_token: socialAccount.accessToken
+        }
+      });
+      likes = likesRes.data.summary?.total_count || 0;
+      console.log(`   Likes: ${likes}`);
+    } catch (err) {
+      console.log(`   Likes endpoint failed, trying reactions...`);
+      
+      try {
+        const reactionsUrl = `https://graph.facebook.com/v18.0/${postId}/reactions`;
+        const reactionsRes = await axios.get(reactionsUrl, {
+          params: {
+            type: 'LIKE',
+            summary: 'total_count',
+            access_token: socialAccount.accessToken
+          }
+        });
+        likes = reactionsRes.data.summary?.total_count || 0;
+        console.log(`   Likes from reactions: ${likes}`);
+      } catch (e) {
+        console.log('   Reactions also failed');
+      }
+    }
+
+    const metrics = {
+      likes,
+      comments,
+      shares,
+      reach: 0
+    };
+    
+    console.log(`✅ Final Facebook metrics:`, metrics);
+    return metrics;
+
+  } catch (error) {
+    console.error('❌ Error in getFacebookMetrics:', error.message);
+    return { likes: 0, comments: 0, shares: 0, reach: 0 };
+  }
+};
+// In socialController.js - UPDATED with shares!
+
+exports.getInstagramMetrics = async (socialAccount, mediaId) => {
+  try {
+    console.log(`📊 Fetching ALL Instagram metrics for media ${mediaId}`);
+    
+    // 1. Basic metrics (likes, comments)
+    const mediaUrl = `https://graph.facebook.com/v18.0/${mediaId}`;
+    const mediaRes = await axios.get(mediaUrl, {
+      params: {
+        fields: 'like_count,comments_count',
+        access_token: socialAccount.accessToken
+      }
+    });
+
+    // 2. Get shares via insights (YE NAYA HAI!)
+    let shares = 0;
+    try {
+      const insightsUrl = `https://graph.facebook.com/v18.0/${mediaId}/insights`;
+      const insightsRes = await axios.get(insightsUrl, {
+        params: {
+          metric: 'shares',
+          period: 'lifetime',
+          access_token: socialAccount.accessToken
+        }
+      });
+      
+      // Parse shares from response
+      if (insightsRes.data.data && insightsRes.data.data.length > 0) {
+        shares = insightsRes.data.data[0].values[0].value || 0;
+      }
+      console.log(`   Shares from insights: ${shares}`);
+    } catch (insightsErr) {
+      console.log('   Shares insights not available:', insightsErr.message);
+    }
+
+    // 3. Get reach and impressions
+    let reach = 0;
+    let impressions = 0;
+    try {
+      const insightsUrl2 = `https://graph.facebook.com/v18.0/${mediaId}/insights`;
+      const insightsRes2 = await axios.get(insightsUrl2, {
+        params: {
+          metric: 'reach,impressions',
+          period: 'lifetime',
+          access_token: socialAccount.accessToken
+        }
+      });
+      
+      insightsRes2.data.data.forEach(metric => {
+        if (metric.name === 'reach') reach = metric.values[0].value || 0;
+        if (metric.name === 'impressions') impressions = metric.values[0].value || 0;
+      });
+    } catch (err) {
+      console.log('   Reach/impressions not available');
+    }
+
+    const metrics = {
+      likes: mediaRes.data.like_count || 0,
+      comments: mediaRes.data.comments_count || 0,
+      shares: shares,  // ✅ AB SHARES BHI AYENGE!
+      reach: reach,
+      impressions: impressions
+    };
+
+    console.log(`✅ Instagram metrics with SHARES:`, metrics);
+    return metrics;
+
+  } catch (error) {
+    console.error('❌ Error:', error.response?.data || error.message);
+    return { 
+      likes: 0, 
+      comments: 0, 
+      shares: 0, 
+      reach: 0, 
+      impressions: 0 
+    };
+  }
+};
+
+
 exports.oauthStates = oauthStates;
